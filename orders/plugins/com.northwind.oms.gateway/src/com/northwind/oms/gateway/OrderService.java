@@ -1,3 +1,5 @@
+// Smart build test - orders gateway changed
+
 package com.northwind.oms.gateway;
 
 import com.northwind.oms.core.model.Money;
