@@ -1,3 +1,5 @@
+// Smart build test - payment changed
+
 package com.northwind.oms.payment;
 
 import java.util.UUID;
