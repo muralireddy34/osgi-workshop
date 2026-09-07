@@ -33,16 +33,16 @@ jobs:
         distribution: 'temurin'
         cache: 'maven'
 
-    # Step 3: Track and filter changed modules using git history differentials
+    # Step 3: Track and filter changed modules looking at the repo root
     - name: Detect Changed Modules
       id: changed-files
       if: ${{ github.event.inputs.scenario != 'all' }}
       uses: tj-actions/changed-files@v44
       with:
         files: |
-          osgi-workshop/**
+          **
 
-    # Step 4: Fixed indentation here to prevent runner block crashes
+    # Step 4: Resolve dependencies and execute build targets directly from root
     - name: Run Build Pipeline & Analyze Dependencies
       env:
         SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
@@ -76,7 +76,8 @@ jobs:
           echo "Analyzing file modifications..."
           
           for file in $CHANGED_FILES; do
-            if [[ "$file" =~ osgi-workshop/([^/]+)/ ]]; then
+            # Extracted root-level directory matching your repository layout
+            if [[ "$file" =~ ^([^/]+)/ ]]; then
               DOMAIN="${BASH_REMATCH[1]}"
               case "$DOMAIN" in
                 thirdparty)   REBUILD_thirdparty=true ;;
@@ -105,7 +106,7 @@ jobs:
           echo "🔎 Modules with explicit local modifications: [$DIRECTLY_CHANGED ]"
           
           if [ -z "$DIRECTLY_CHANGED" ]; then
-             echo "✅ No files inside 'osgi-workshop/' were modified. Pipeline clean. Exiting safely."
+             echo "✅ No source directories modified. Pipeline clean. Exiting safely."
              exit 0
           fi
 
@@ -184,17 +185,17 @@ jobs:
           echo "--------------------------------------------------"
           echo "▶️ Target Module: ${target^^}"
           echo "--------------------------------------------------"
-          if [ -d "osgi-workshop/$target" ]; then
-            cd "osgi-workshop/$target"
+          # Checking directly at the repository root folder location
+          if [ -d "$target" ]; then
+            cd "$target"
             mvn clean package -DskipTests
             cd - > /dev/null
             echo "✅ Finished building: ${target^^}"
           else
-            echo "⚠️ Directory target 'osgi-workshop/$target' missing. Skipping."
+            echo "⚠️ Directory target '$target' missing. Skipping."
           fi
         done
         
-        echo ""
         echo "============================================"
         echo "🎉 PIPELINE COMPLETE - ALL STEPS SUCCESSFUL"
         echo "============================================"
