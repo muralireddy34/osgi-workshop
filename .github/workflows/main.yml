@@ -47,7 +47,6 @@ jobs:
       # 3. Display versions
       # --------------------------------------------------
       - name: Display Java and Maven versions
-        working-directory: osgi-workshop
         run: |
           java -version
           mvn -version
@@ -57,7 +56,6 @@ jobs:
       # --------------------------------------------------
       - name: Build all OSGi modules
         if: github.event_name == 'workflow_dispatch' && inputs.build_mode == 'all'
-        working-directory: osgi-workshop
         run: |
           mvn -B clean verify
 
@@ -66,6 +64,5 @@ jobs:
       # --------------------------------------------------
       - name: Build OSGi project
         if: github.event_name != 'workflow_dispatch'
-        working-directory: osgi-workshop
         run: |
           mvn -B clean verify
