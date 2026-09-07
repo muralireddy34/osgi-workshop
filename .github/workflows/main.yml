@@ -42,7 +42,7 @@ jobs:
         files: |
           **
 
-    # Step 4: Resolve dependencies and execute build targets directly from root
+    # Step 4: Resolve dependencies and execute build targets using Maven Reactor
     - name: Run Build Pipeline & Analyze Dependencies
       env:
         SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
@@ -76,7 +76,6 @@ jobs:
           echo "Analyzing file modifications..."
           
           for file in $CHANGED_FILES; do
-            # Extracted root-level directory matching your repository layout
             if [[ "$file" =~ ^([^/]+)/ ]]; then
               DOMAIN="${BASH_REMATCH[1]}"
               case "$DOMAIN" in
@@ -164,11 +163,16 @@ jobs:
           [[ "$DIRECTLY_CHANGED" =~ "reporting" ]]  && echo "   Path: reporting (Leaf target node)"
         fi
 
-        BUILD_SEQUENCE=""
+        # Convert active targets into a comma-separated list for Maven reactor execution flags
+        MAVEN_PROJECTS=""
         for mod in "${FULL_ORDER[@]}"; do
           var_name="REBUILD_$mod"
           if [ "${!var_name}" = true ]; then
-            BUILD_SEQUENCE="$BUILD_SEQUENCE $mod"
+            if [ -z "$MAVEN_PROJECTS" ]; then
+              MAVEN_PROJECTS="$mod"
+            else
+              MAVEN_PROJECTS="$MAVEN_PROJECTS,$mod"
+            fi
           fi
         done
 
@@ -176,19 +180,14 @@ jobs:
         echo "=================================================="
         echo "📋 FINAL CALCULATED SMART BUILD SEQUENCE"
         echo "=================================================="
-        echo " Order: $BUILD_SEQUENCE"
+        echo " Targets: $MAVEN_PROJECTS"
         echo "=================================================="
         echo ""
 
-        echo "🔨 Executing Build Tasks..."
-        for target in $BUILD_SEQUENCE; do
-          echo "--------------------------------------------------"
-          echo "▶️ Target Module: ${target^^}"
-          echo "--------------------------------------------------"
-          # Checking directly at the repository root folder location
-          if [ -d "$target" ]; then
-            cd "$target"
-            mvn clean package -DskipTests
+        # Fire off the unified root project execution pipeline
+        echo "🔨 Launching Root Multi-Module Maven Reactor Process..."
+        mvn clean package -pl "$MAVEN_PROJECTS" -DskipTests
+
             cd - > /dev/null
             echo "✅ Finished building: ${target^^}"
           else
