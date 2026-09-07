@@ -163,7 +163,6 @@ jobs:
           [[ "$DIRECTLY_CHANGED" =~ "reporting" ]]  && echo "   Path: reporting (Leaf target node)"
         fi
 
-        # Convert active targets into a comma-separated list for Maven reactor execution flags
         MAVEN_PROJECTS=""
         for mod in "${FULL_ORDER[@]}"; do
           var_name="REBUILD_$mod"
@@ -184,17 +183,10 @@ jobs:
         echo "=================================================="
         echo ""
 
-        # Fire off the unified root project execution pipeline
         echo "🔨 Launching Root Multi-Module Maven Reactor Process..."
         mvn clean package -pl "$MAVEN_PROJECTS" -DskipTests
-
-            cd - > /dev/null
-            echo "✅ Finished building: ${target^^}"
-          else
-            echo "⚠️ Directory target '$target' missing. Skipping."
-          fi
-        done
         
-        echo "============================================"
+        echo ""
+        echo "=================================================="
         echo "🎉 PIPELINE COMPLETE - ALL STEPS SUCCESSFUL"
-        echo "============================================"
+        echo "=================================================="
