@@ -1,8 +1,6 @@
 name: OSGi Workshop - Build Pipeline Assignment
 
 on:
-  # push:
-  #   branches: [ main ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -44,7 +42,7 @@ jobs:
         files: |
           osgi-workshop/**
 
-    # Step 4: Resolve dependencies, map graph matrix, and execute the actual pipeline
+    # Step 4: Fixed indentation here to prevent runner block crashes
     - name: Run Build Pipeline & Analyze Dependencies
       env:
         SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
@@ -54,11 +52,8 @@ jobs:
         echo "🚀 INITIALIZING OSGi SMART BUILD PIPELINE"
         echo "========================================="
         
-        # 1. Define Static Topological Full Build Order Array
-        # (Must follow dependency layout to avoid unbuilt/missing package targets)
         FULL_ORDER=("thirdparty" "catalog" "customer" "notification" "security" "shipping" "payment" "orders" "reporting")
         
-        # Initialize flags for modules requiring rebuilds
         REBUILD_thirdparty=false
         REBUILD_catalog=false
         REBUILD_customer=false
@@ -69,7 +64,6 @@ jobs:
         REBUILD_orders=false
         REBUILD_reporting=false
         
-        # Track directly modified modules for visualization logs
         DIRECTLY_CHANGED=""
 
         if [ "$SCENARIO" = "all" ]; then
@@ -81,7 +75,6 @@ jobs:
           echo "Scenario Selected: 2️⃣ Build Only Changed Products/Modules"
           echo "Analyzing file modifications..."
           
-          # Iterate through changed files to mark starting root nodes
           for file in $CHANGED_FILES; do
             if [[ "$file" =~ osgi-workshop/([^/]+)/ ]]; then
               DOMAIN="${BASH_REMATCH[1]}"
@@ -99,7 +92,6 @@ jobs:
             fi
           done
           
-          # Accumulate baseline array strings for reporting logs
           [ "$REBUILD_thirdparty" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED thirdparty"
           [ "$REBUILD_catalog" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED catalog"
           [ "$REBUILD_customer" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED customer"
@@ -117,40 +109,32 @@ jobs:
              exit 0
           fi
 
-          # 2. RESOLVE GRAPH DEPENDENCY CHAINS (Downstream Cascading Traversal)
-          # Step A: thirdparty triggers downstream impacts globally
           if [ "$REBUILD_thirdparty" = true ]; then
             REBUILD_catalog=true; REBUILD_customer=true; REBUILD_notification=true;
             REBUILD_security=true; REBUILD_shipping=true; REBUILD_payment=true;
             REBUILD_orders=true; REBUILD_reporting=true;
           fi
           
-          # Step B: catalog impacts orders and reporting
           if [ "$REBUILD_catalog" = true ]; then
             REBUILD_orders=true; REBUILD_reporting=true;
           fi
           
-          # Step C: Components feeding into orchestrator node (orders)
           if [ "$REBUILD_customer" = true ] || [ "$REBUILD_notification" = true ] || \
              [ "$REBUILD_security" = true ] || [ "$REBUILD_shipping" = true ] || \
              [ "$REBUILD_payment" = true ]; then
             REBUILD_orders=true
           fi
           
-          # Step D: Final downstream leaf nodes (orders feeds reporting)
           if [ "$REBUILD_orders" = true ]; then
             REBUILD_reporting=true
           fi
         fi
 
-        # 3. PRINT PART 2 DELIVERABLE: PRODUCT DEPENDENCY GRAPH VISUALIZATION
         echo ""
         echo "=================================================="
         echo "📊 PART 2: PRODUCT DEPENDENCY GRAPH DIAGRAM"
         echo "=================================================="
-        echo "Dependency Notation Rule: ModuleA ──► [ Downstream Interdependent Elements ]"
         
-        # Helper to style active targets in terminal logs using ANSI Colors
         fmt_node() {
           local name=$1; local var_name="REBUILD_$name"
           if [ "${!var_name}" = true ]; then echo -e "\033[31m$name*\033[0m"; else echo "$name"; fi
@@ -164,9 +148,7 @@ jobs:
         echo "   $(fmt_node shipping) ──► [ $(fmt_node orders) ]"
         echo "   $(fmt_node payment) ──► [ $(fmt_node orders) ]"
         echo "   $(fmt_node orders) ──► [ $(fmt_node reporting) ]"
-        echo -e "\nNote: Nodes highlighted in \033[31mRed with an asterisk (*)\033[0m are scheduled for build evaluation."
 
-        # Show path chains if running in incremental change scenario
         if [ "$SCENARIO" != "all" ]; then
           echo ""
           echo "🔗 RESOLVED DOWNSTREAM CHAINS FOR CHANGED CODE:"
@@ -181,7 +163,6 @@ jobs:
           [[ "$DIRECTLY_CHANGED" =~ "reporting" ]]  && echo "   Path: reporting (Leaf target node)"
         fi
 
-        # 4. RESOLVE COMPILATION SEQUENCE IN CRITICAL ORDER
         BUILD_SEQUENCE=""
         for mod in "${FULL_ORDER[@]}"; do
           var_name="REBUILD_$mod"
@@ -198,24 +179,22 @@ jobs:
         echo "=================================================="
         echo ""
 
-        # 5. EXECUTE BUNDLE COMPILATIONS VIA MAVEN
         echo "🔨 Executing Build Tasks..."
         for target in $BUILD_SEQUENCE; do
           echo "--------------------------------------------------"
           echo "▶️ Target Module: ${target^^}"
           echo "--------------------------------------------------"
-          
-          # Navigate into the sub-directory and fire off clean compile target routines
           if [ -d "osgi-workshop/$target" ]; then
             cd "osgi-workshop/$target"
             mvn clean package -DskipTests
             cd - > /dev/null
             echo "✅ Finished building: ${target^^}"
           else
-            echo "⚠️ Directory configuration target 'osgi-workshop/$target' missing. Skipping."
+            echo "⚠️ Directory target 'osgi-workshop/$target' missing. Skipping."
           fi
         done
         
         echo ""
-        echo "========================================="
+        echo "============================================"
         echo "🎉 PIPELINE COMPLETE - ALL STEPS SUCCESSFUL"
+        echo "============================================"
