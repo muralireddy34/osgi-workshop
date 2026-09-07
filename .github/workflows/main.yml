@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      
+
   pull_request:
 
   workflow_dispatch:
@@ -52,7 +52,50 @@ jobs:
           mvn -version
 
       # --------------------------------------------------
-      # 4. Full build
+      # 4. Detect changed modules
+      # --------------------------------------------------
+      - name: Detect changed modules
+        id: changes
+        if: github.event_name != 'workflow_dispatch' || inputs.build_mode == 'changed'
+        run: |
+          echo "========================================"
+          echo "Detecting changed files"
+          echo "========================================"
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --name-only \
+              "${{ github.event.pull_request.base.sha }}" \
+              "${{ github.event.pull_request.head.sha }}" \
+              > changed-files.txt
+
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            git diff --name-only \
+              "${{ github.event.before }}" \
+              "${{ github.sha }}" \
+              > changed-files.txt
+
+          else
+            git diff --name-only HEAD^ HEAD > changed-files.txt
+          fi
+
+          echo ""
+          echo "Changed files:"
+          cat changed-files.txt
+
+          echo ""
+          echo "========================================"
+          echo "Changed OSGi module paths"
+          echo "========================================"
+
+          grep -E \
+            '^(catalog|customer|security|payment|shipping|notification|orders|reporting|thirdparty)/' \
+            changed-files.txt \
+            | cut -d/ -f1-3 \
+            | sort -u \
+            || true
+
+      # --------------------------------------------------
+      # 5. Full build
       # --------------------------------------------------
       - name: Build all OSGi modules
         if: github.event_name == 'workflow_dispatch' && inputs.build_mode == 'all'
@@ -60,7 +103,7 @@ jobs:
           mvn -B clean verify
 
       # --------------------------------------------------
-      # 5. Automatic full build for now
+      # 6. Automatic full build for now
       # --------------------------------------------------
       - name: Build OSGi project
         if: github.event_name != 'workflow_dispatch'
