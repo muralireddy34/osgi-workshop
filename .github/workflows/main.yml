@@ -1,0 +1,71 @@
+name: Northwind OSGi Smart Build
+
+on:
+  push:
+    branches:
+      - main
+      
+  pull_request:
+
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: "Select build mode"
+        required: true
+        type: choice
+        default: changed
+        options:
+          - changed
+          - all
+
+jobs:
+  build:
+    name: Build Northwind OSGi
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # --------------------------------------------------
+      # 1. Checkout source
+      # --------------------------------------------------
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # --------------------------------------------------
+      # 2. Setup Java 17
+      # --------------------------------------------------
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # --------------------------------------------------
+      # 3. Display versions
+      # --------------------------------------------------
+      - name: Display Java and Maven versions
+        working-directory: osgi-workshop
+        run: |
+          java -version
+          mvn -version
+
+      # --------------------------------------------------
+      # 4. Full build
+      # --------------------------------------------------
+      - name: Build all OSGi modules
+        if: github.event_name == 'workflow_dispatch' && inputs.build_mode == 'all'
+        working-directory: osgi-workshop
+        run: |
+          mvn -B clean verify
+
+      # --------------------------------------------------
+      # 5. Automatic full build for now
+      # --------------------------------------------------
+      - name: Build OSGi project
+        if: github.event_name != 'workflow_dispatch'
+        working-directory: osgi-workshop
+        run: |
+          mvn -B clean verify
