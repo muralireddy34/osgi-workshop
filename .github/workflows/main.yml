@@ -1,612 +1,221 @@
-name: Northwind OSGi Smart Build
+name: OSGi Workshop - Build Pipeline Assignment
 
 on:
-  # Automatic execution for Pull Requests
+  # push:
+  #   branches: [ main ]
   pull_request:
-
-  # Manual execution
+    branches: [ main ]
   workflow_dispatch:
     inputs:
-      build_mode:
-        description: "Select build mode"
+      scenario:
+        description: 'Choose Build Scenario'
         required: true
+        default: 'changed'
         type: choice
-        default: changed
         options:
-          - changed
           - all
-
-      base_commit:
-        description: "Base commit for changed mode (leave empty to compare with previous commit)"
-        required: false
-        type: string
-        default: ""
+          - changed
 
 jobs:
-
-  build:
-    name: Northwind OSGi Build
+  build-pipeline:
     runs-on: ubuntu-latest
-
+    
     steps:
+    # Step 1: Check out the repository code with full history for file tracking
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      # ============================================================
-      # 1. CHECKOUT
-      # ============================================================
-      - name: Checkout source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    # Step 2: Set up Java and Maven caching environment
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: 'maven'
 
+    # Step 3: Track and filter changed modules using git history differentials
+    - name: Detect Changed Modules
+      id: changed-files
+      if: ${{ github.event.inputs.scenario != 'all' }}
+      uses: tj-actions/changed-files@v44
+      with:
+        files: |
+          osgi-workshop/**
 
-      # ============================================================
-      # 2. JAVA 17
-      # ============================================================
-      - name: Setup Java 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: maven
+    # Step 4: Resolve dependencies, map graph matrix, and execute the actual pipeline
+    - name: Run Build Pipeline & Analyze Dependencies
+      env:
+        SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
+        CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+      run: |
+        echo "========================================="
+        echo "🚀 INITIALIZING OSGi SMART BUILD PIPELINE"
+        echo "========================================="
+        
+        # 1. Define Static Topological Full Build Order Array
+        # (Must follow dependency layout to avoid unbuilt/missing package targets)
+        FULL_ORDER=("thirdparty" "catalog" "customer" "notification" "security" "shipping" "payment" "orders" "reporting")
+        
+        # Initialize flags for modules requiring rebuilds
+        REBUILD_thirdparty=false
+        REBUILD_catalog=false
+        REBUILD_customer=false
+        REBUILD_notification=false
+        REBUILD_security=false
+        REBUILD_shipping=false
+        REBUILD_payment=false
+        REBUILD_orders=false
+        REBUILD_reporting=false
+        
+        # Track directly modified modules for visualization logs
+        DIRECTLY_CHANGED=""
 
-
-      # ============================================================
-      # 3. DISPLAY TOOL VERSIONS
-      # ============================================================
-      - name: Display Java and Maven versions
-        run: |
-          echo "============================================================"
-          echo "NORTHWIND OMS - BUILD ENVIRONMENT"
-          echo "============================================================"
-          echo
-
-          echo "Java:"
-          java -version
-
-          echo
-          echo "Maven:"
-          mvn -version
-
-          echo
-          echo "Repository : ${{ github.repository }}"
-          echo "Commit     : ${{ github.sha }}"
-          echo "Event      : ${{ github.event_name }}"
-          echo
-
-
-      # ============================================================
-      # 4. DISPLAY PRODUCT DEPENDENCY GRAPH
-      #
-      # This graph is for visibility/documentation.
-      # Actual dependency resolution and reactor ordering are
-      # performed by Maven/Tycho.
-      # ============================================================
-      - name: Display Northwind OSGi dependency graph
-        run: |
-          echo
-          echo "============================================================"
-          echo "NORTHWIND OMS - OSGi PRODUCT DEPENDENCY GRAPH"
-          echo "============================================================"
-          echo
-          echo "Direction: dependency --> dependent"
-          echo
-          echo "Actual build dependency resolution is performed by"
-          echo "Maven/Tycho reactor."
-          echo
-
-          echo "---------------------- BUNDLE DEPENDENCIES -----------------"
-          echo
-
-          echo "com.northwind.oms.core"
-          echo "  --> com.northwind.oms.inventory"
-          echo "  --> com.northwind.oms.pricing"
-          echo "  --> com.northwind.oms.gateway"
-          echo "  --> com.northwind.oms.payment"
-          echo "  --> com.northwind.oms.shipping"
-          echo "  --> com.northwind.oms.reporting"
-          echo
-
-          echo "com.northwind.oms.inventory"
-          echo "  --> com.northwind.oms.gateway"
-          echo
-
-          echo "com.northwind.oms.pricing"
-          echo "  --> com.northwind.oms.gateway"
-          echo
-
-          echo "com.northwind.oms.customer"
-          echo "  --> com.northwind.oms.shipping"
-          echo "  --> com.northwind.oms.notification"
-          echo
-
-          echo "com.northwind.oms.security"
-          echo "  --> com.northwind.oms.payment"
-          echo
-
-          echo "com.northwind.oms.shipping"
-          echo "  --> com.northwind.oms.notification"
-          echo
-
-          echo "com.northwind.oms.payment"
-          echo "  --> com.northwind.oms.reporting"
-          echo
-
-          echo "com.northwind.oms.gateway"
-          echo "  --> com.northwind.oms.reporting"
-          echo
-
-          echo "com.northwind.oms.tpcl.org.slf4j"
-          echo "  --> com.northwind.oms.gateway"
-          echo "  --> com.northwind.oms.payment"
-          echo "  --> com.northwind.oms.notification"
-          echo "  --> com.northwind.oms.reporting"
-          echo
-
-          echo "---------------------- FEATURE DEPENDENCIES -----------------"
-          echo
-
-          echo "com.northwind.oms.catalog.feature"
-          echo "  --> com.northwind.oms.orders.feature"
-          echo "  --> com.northwind.oms.payment.feature"
-          echo "  --> com.northwind.oms.shipping.feature"
-          echo "  --> com.northwind.oms.reporting.feature"
-          echo
-
-          echo "com.northwind.oms.customer.feature"
-          echo "  --> com.northwind.oms.shipping.feature"
-          echo "  --> com.northwind.oms.notification.feature"
-          echo
-
-          echo "com.northwind.oms.security.feature"
-          echo "  --> com.northwind.oms.payment.feature"
-          echo
-
-          echo "com.northwind.oms.shipping.feature"
-          echo "  --> com.northwind.oms.notification.feature"
-          echo
-
-          echo "com.northwind.oms.orders.feature"
-          echo "  --> com.northwind.oms.reporting.feature"
-          echo
-
-          echo "com.northwind.oms.payment.feature"
-          echo "  --> com.northwind.oms.reporting.feature"
-          echo
-
-          echo "---------------------- FEATURE CONTENT ---------------------"
-          echo
-
-          echo "catalog.feature"
-          echo "  contains: core"
-          echo "  contains: inventory"
-          echo
-
-          echo "customer.feature"
-          echo "  contains: customer"
-          echo
-
-          echo "security.feature"
-          echo "  contains: security"
-          echo
-
-          echo "payment.feature"
-          echo "  contains: payment"
-          echo
-
-          echo "shipping.feature"
-          echo "  contains: shipping"
-          echo
-
-          echo "notification.feature"
-          echo "  contains: notification"
-          echo
-
-          echo "orders.feature"
-          echo "  contains: pricing"
-          echo "  contains: gateway"
-          echo
-
-          echo "reporting.feature"
-          echo "  contains: reporting"
-          echo
-
-          echo "thirdparty.feature"
-          echo "  contains: com.northwind.oms.tpcl.org.slf4j"
-          echo
-
-          echo "============================================================"
-
-
-      # ============================================================
-      # 5. DETECT CHANGED MODULES
-      #
-      # Only required for:
-      #   - Pull Requests
-      #   - Manual changed mode
-      #
-      # Manual all mode skips change detection.
-      # ============================================================
-      - name: Detect changed OSGi modules
-        id: changes
-        if: |
-          github.event_name == 'pull_request' ||
-          (github.event_name == 'workflow_dispatch' &&
-           inputs.build_mode == 'changed')
-        shell: bash
-        run: |
-
-          echo
-          echo "============================================================"
-          echo "NORTHWIND OMS - CHANGE DETECTION"
-          echo "============================================================"
-
-          # --------------------------------------------------------
-          # Determine comparison range
-          # --------------------------------------------------------
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-
-            BASE="${{ github.event.pull_request.base.sha }}"
-            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-
-          else
-
-            HEAD_SHA="${{ github.sha }}"
-
-            if [ -n "${{ inputs.base_commit }}" ]; then
-              BASE="${{ inputs.base_commit }}"
-            else
-              BASE="HEAD^"
+        if [ "$SCENARIO" = "all" ]; then
+          echo "Scenario Selected: 1️⃣ Build All Products"
+          for mod in "${FULL_ORDER[@]}"; do
+            eval "REBUILD_$mod=true"
+          done
+        else
+          echo "Scenario Selected: 2️⃣ Build Only Changed Products/Modules"
+          echo "Analyzing file modifications..."
+          
+          # Iterate through changed files to mark starting root nodes
+          for file in $CHANGED_FILES; do
+            if [[ "$file" =~ osgi-workshop/([^/]+)/ ]]; then
+              DOMAIN="${BASH_REMATCH[1]}"
+              case "$DOMAIN" in
+                thirdparty)   REBUILD_thirdparty=true ;;
+                catalog)      REBUILD_catalog=true ;;
+                customer)     REBUILD_customer=true ;;
+                notification) REBUILD_notification=true ;;
+                security)     REBUILD_security=true ;;
+                shipping)     REBUILD_shipping=true ;;
+                payment)      REBUILD_payment=true ;;
+                orders)       REBUILD_orders=true ;;
+                reporting)    REBUILD_reporting=true ;;
+              esac
             fi
-
+          done
+          
+          # Accumulate baseline array strings for reporting logs
+          [ "$REBUILD_thirdparty" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED thirdparty"
+          [ "$REBUILD_catalog" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED catalog"
+          [ "$REBUILD_customer" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED customer"
+          [ "$REBUILD_notification" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED notification"
+          [ "$REBUILD_security" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED security"
+          [ "$REBUILD_shipping" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED shipping"
+          [ "$REBUILD_payment" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED payment"
+          [ "$REBUILD_orders" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED orders"
+          [ "$REBUILD_reporting" = true ] && DIRECTLY_CHANGED="$DIRECTLY_CHANGED reporting"
+          
+          echo "🔎 Modules with explicit local modifications: [$DIRECTLY_CHANGED ]"
+          
+          if [ -z "$DIRECTLY_CHANGED" ]; then
+             echo "✅ No files inside 'osgi-workshop/' were modified. Pipeline clean. Exiting safely."
+             exit 0
           fi
 
-          echo
-          echo "Base commit : $BASE"
-          echo "Head commit : $HEAD_SHA"
-          echo
-
-
-          # --------------------------------------------------------
-          # Validate base commit
-          # --------------------------------------------------------
-
-          if ! git rev-parse "$BASE" >/dev/null 2>&1; then
-            echo
-            echo "ERROR: Base commit '$BASE' could not be resolved."
-            echo
-            echo "For manual execution, provide a valid commit SHA"
-            echo "using the 'base_commit' input."
-            echo
-            exit 1
+          # 2. RESOLVE GRAPH DEPENDENCY CHAINS (Downstream Cascading Traversal)
+          # Step A: thirdparty triggers downstream impacts globally
+          if [ "$REBUILD_thirdparty" = true ]; then
+            REBUILD_catalog=true; REBUILD_customer=true; REBUILD_notification=true;
+            REBUILD_security=true; REBUILD_shipping=true; REBUILD_payment=true;
+            REBUILD_orders=true; REBUILD_reporting=true;
           fi
-
-
-          # --------------------------------------------------------
-          # Validate head commit
-          # --------------------------------------------------------
-
-          if ! git rev-parse "$HEAD_SHA" >/dev/null 2>&1; then
-            echo
-            echo "ERROR: Head commit '$HEAD_SHA' could not be resolved."
-            exit 1
+          
+          # Step B: catalog impacts orders and reporting
+          if [ "$REBUILD_catalog" = true ]; then
+            REBUILD_orders=true; REBUILD_reporting=true;
           fi
+          
+          # Step C: Components feeding into orchestrator node (orders)
+          if [ "$REBUILD_customer" = true ] || [ "$REBUILD_notification" = true ] || \
+             [ "$REBUILD_security" = true ] || [ "$REBUILD_shipping" = true ] || \
+             [ "$REBUILD_payment" = true ]; then
+            REBUILD_orders=true
+          fi
+          
+          # Step D: Final downstream leaf nodes (orders feeds reporting)
+          if [ "$REBUILD_orders" = true ]; then
+            REBUILD_reporting=true
+          fi
+        fi
 
+        # 3. PRINT PART 2 DELIVERABLE: PRODUCT DEPENDENCY GRAPH VISUALIZATION
+        echo ""
+        echo "=================================================="
+        echo "📊 PART 2: PRODUCT DEPENDENCY GRAPH DIAGRAM"
+        echo "=================================================="
+        echo "Dependency Notation Rule: ModuleA ──► [ Downstream Interdependent Elements ]"
+        
+        # Helper to style active targets in terminal logs using ANSI Colors
+        fmt_node() {
+          local name=$1; local var_name="REBUILD_$name"
+          if [ "${!var_name}" = true ]; then echo -e "\033[31m$name*\033[0m"; else echo "$name"; fi
+        }
 
-          # --------------------------------------------------------
-          # Detect changed files
-          # --------------------------------------------------------
+        echo "   $(fmt_node thirdparty) ──► [ $(fmt_node catalog), $(fmt_node orders), $(fmt_node payment), $(fmt_node shipping), $(fmt_node notification), $(fmt_node customer), $(fmt_node security), $(fmt_node reporting) ]"
+        echo "   $(fmt_node catalog) ──► [ $(fmt_node orders), $(fmt_node reporting) ]"
+        echo "   $(fmt_node customer) ──► [ $(fmt_node orders) ]"
+        echo "   $(fmt_node notification) ──► [ $(fmt_node orders) ]"
+        echo "   $(fmt_node security) ──► [ $(fmt_node orders) ]"
+        echo "   $(fmt_node shipping) ──► [ $(fmt_node orders) ]"
+        echo "   $(fmt_node payment) ──► [ $(fmt_node orders) ]"
+        echo "   $(fmt_node orders) ──► [ $(fmt_node reporting) ]"
+        echo -e "\nNote: Nodes highlighted in \033[31mRed with an asterisk (*)\033[0m are scheduled for build evaluation."
 
-          git diff --name-only "$BASE" "$HEAD_SHA" > changed-files.txt
+        # Show path chains if running in incremental change scenario
+        if [ "$SCENARIO" != "all" ]; then
+          echo ""
+          echo "🔗 RESOLVED DOWNSTREAM CHAINS FOR CHANGED CODE:"
+          [[ "$DIRECTLY_CHANGED" =~ "thirdparty" ]] && echo "   Path: thirdparty ──► Global Impact (All modules triggered)"
+          [[ "$DIRECTLY_CHANGED" =~ "catalog" ]]    && echo "   Path: catalog ──► orders ──► reporting"
+          [[ "$DIRECTLY_CHANGED" =~ "customer" ]]   && echo "   Path: customer ──► orders ──► reporting"
+          [[ "$DIRECTLY_CHANGED" =~ "notification" ]] && echo "   Path: notification ──► orders ──► reporting"
+          [[ "$DIRECTLY_CHANGED" =~ "security" ]]   && echo "   Path: security ──► orders ──► reporting"
+          [[ "$DIRECTLY_CHANGED" =~ "shipping" ]]   && echo "   Path: shipping ──► orders ──► reporting"
+          [[ "$DIRECTLY_CHANGED" =~ "payment" ]]    && echo "   Path: payment ──► orders ──► reporting"
+          [[ "$DIRECTLY_CHANGED" =~ "orders" ]]     && echo "   Path: orders ──► reporting"
+          [[ "$DIRECTLY_CHANGED" =~ "reporting" ]]  && echo "   Path: reporting (Leaf target node)"
+        fi
 
+        # 4. RESOLVE COMPILATION SEQUENCE IN CRITICAL ORDER
+        BUILD_SEQUENCE=""
+        for mod in "${FULL_ORDER[@]}"; do
+          var_name="REBUILD_$mod"
+          if [ "${!var_name}" = true ]; then
+            BUILD_SEQUENCE="$BUILD_SEQUENCE $mod"
+          fi
+        done
 
-          echo
-          echo "---------------------- CHANGED FILES -----------------------"
-          echo
+        echo ""
+        echo "=================================================="
+        echo "📋 FINAL CALCULATED SMART BUILD SEQUENCE"
+        echo "=================================================="
+        echo " Order: $BUILD_SEQUENCE"
+        echo "=================================================="
+        echo ""
 
-          if [ -s changed-files.txt ]; then
-            cat changed-files.txt
+        # 5. EXECUTE BUNDLE COMPILATIONS VIA MAVEN
+        echo "🔨 Executing Build Tasks..."
+        for target in $BUILD_SEQUENCE; do
+          echo "--------------------------------------------------"
+          echo "▶️ Target Module: ${target^^}"
+          echo "--------------------------------------------------"
+          
+          # Navigate into the sub-directory and fire off clean compile target routines
+          if [ -d "osgi-workshop/$target" ]; then
+            cd "osgi-workshop/$target"
+            mvn clean package -DskipTests
+            cd - > /dev/null
+            echo "✅ Finished building: ${target^^}"
           else
-            echo "No files changed."
+            echo "⚠️ Directory configuration target 'osgi-workshop/$target' missing. Skipping."
           fi
-
-
-          # --------------------------------------------------------
-          # Determine whether a complete reactor build is required
-          #
-          # Root POM:
-          #   pom.xml
-          #
-          # Component-level POM:
-          #   module/pom.xml
-          #
-          # Maven configuration:
-          #   .mvn/*
-          # --------------------------------------------------------
-
-          FULL_BUILD=false
-
-          if grep -Eq '^(pom.xml|[^/]+/pom.xml)$' changed-files.txt; then
-            FULL_BUILD=true
-          fi
-
-          if grep -Eq '^\.mvn/' changed-files.txt; then
-            FULL_BUILD=true
-          fi
-
-
-          # --------------------------------------------------------
-          # Convert changed files into Maven/Tycho project paths
-          #
-          # Example:
-          #
-          # catalog/plugins/com.northwind.oms.core/src/...
-          #
-          # becomes:
-          #
-          # catalog/plugins/com.northwind.oms.core
-          # --------------------------------------------------------
-
-          CHANGED_PROJECTS=$(
-            awk -F/ '
-              NF >= 3 &&
-              ($2 == "plugins" || $2 == "features") {
-                print $1 "/" $2 "/" $3
-              }
-            ' changed-files.txt |
-            sort -u |
-            paste -sd, -
-          )
-
-
-          echo
-          echo "---------------------- CHANGED MODULES ---------------------"
-          echo
-
-          if [ -n "$CHANGED_PROJECTS" ]; then
-
-            INDEX=1
-
-            echo "$CHANGED_PROJECTS" |
-              tr ',' '\n' |
-              while read -r PROJECT; do
-                echo "[$INDEX] $PROJECT"
-                INDEX=$((INDEX + 1))
-              done
-
-          else
-
-            echo "No OSGi projects changed."
-
-          fi
-
-
-          echo
-          echo "---------------------- BUILD DECISION ---------------------"
-          echo
-
-          echo "Full reactor build required : $FULL_BUILD"
-
-          if [ "$FULL_BUILD" = "true" ]; then
-            echo
-            echo "Reason:"
-            echo "A Maven reactor POM or Maven configuration changed."
-            echo "The complete reactor will be built."
-          fi
-
-
-          # --------------------------------------------------------
-          # Export outputs
-          # --------------------------------------------------------
-
-          echo "projects=$CHANGED_PROJECTS" >> "$GITHUB_OUTPUT"
-          echo "full_build=$FULL_BUILD" >> "$GITHUB_OUTPUT"
-
-
-      # ============================================================
-      # 6. SCENARIO 1 - BUILD ALL PRODUCTS
-      #
-      # Manual execution:
-      #   build_mode = all
-      #
-      # Maven/Tycho determines the correct reactor order.
-      # ============================================================
-      - name: Scenario 1 - Build all OSGi products
-        if: |
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_mode == 'all'
-        run: |
-
-          echo
-          echo "============================================================"
-          echo "SCENARIO 1 - BUILD ALL PRODUCTS"
-          echo "============================================================"
-          echo
-
-          echo "Build mode : all"
-          echo
-          echo "Building the complete Northwind OMS OSGi reactor."
-          echo
-          echo "Maven/Tycho will determine the dependency order."
-          echo "The Maven reactor build order will be visible below."
-          echo
-
-          mvn -B clean verify
-
-
-      # ============================================================
-      # 7. FULL BUILD WHEN MAVEN/TYCHO CONFIGURATION CHANGES
-      #
-      # Applies to:
-      #   - Pull Requests
-      #   - Manual changed mode
-      #
-      # If a POM/.mvn file changes, a complete reactor build is safer.
-      # ============================================================
-      - name: Full reactor build - Maven configuration changed
-        if: |
-          (github.event_name == 'pull_request' ||
-           (github.event_name == 'workflow_dispatch' &&
-            inputs.build_mode == 'changed')) &&
-          steps.changes.outputs.full_build == 'true'
-        run: |
-
-          echo
-          echo "============================================================"
-          echo "FULL REACTOR BUILD"
-          echo "============================================================"
-          echo
-
-          echo "A Maven reactor POM or Maven configuration changed."
-          echo
-          echo "Because reactor configuration can affect multiple"
-          echo "modules, the complete Northwind OMS reactor will be built."
-          echo
-
-          mvn -B clean verify
-
-
-      # ============================================================
-      # 8. SCENARIO 2 - CHANGED MODULES ONLY
-      #
-      # Maven/Tycho performs dependency/dependent resolution:
-      #
-      #   -pl  = changed projects
-      #   -am  = required dependencies
-      #   -amd = dependent projects
-      #
-      # Maven then calculates the correct reactor build order.
-      # ============================================================
-      - name: Scenario 2 - Build changed and impacted modules
-        if: |
-          (github.event_name == 'pull_request' ||
-           (github.event_name == 'workflow_dispatch' &&
-            inputs.build_mode == 'changed')) &&
-          steps.changes.outputs.full_build != 'true' &&
-          steps.changes.outputs.projects != ''
-        run: |
-
-          echo
-          echo "============================================================"
-          echo "SCENARIO 2 - SMART CHANGED-MODULE BUILD"
-          echo "============================================================"
-          echo
-
-          echo "Changed projects:"
-          echo
-
-          echo "${{ steps.changes.outputs.projects }}" |
-            tr ',' '\n' |
-            nl -ba
-
-          echo
-          echo "============================================================"
-          echo "DEPENDENCY / DEPENDENT RESOLUTION"
-          echo "============================================================"
-          echo
-
-          echo "Maven reactor options:"
-          echo
-          echo "  -pl  = select changed projects"
-          echo "  -am  = include required dependencies"
-          echo "  -amd = include dependent projects"
-          echo
-
-          echo "Maven/Tycho will calculate the complete impacted"
-          echo "reactor closure and build it in dependency order."
-          echo
-
-          echo "============================================================"
-          echo "EXPECTED IMPACT PATHS FROM NORTHWIND GRAPH"
-          echo "============================================================"
-          echo
-
-          echo "The complete product dependency graph was displayed"
-          echo "earlier in this workflow."
-          echo
-          echo "The selected changed projects are now passed to"
-          echo "Maven/Tycho, which determines the actual dependency"
-          echo "and dependent closure from the reactor."
-          echo
-
-          echo "============================================================"
-          echo "MAVEN/TYCHO IMPACTED REACTOR BUILD"
-          echo "============================================================"
-          echo
-
-          mvn -B \
-            -pl "${{ steps.changes.outputs.projects }}" \
-            -am \
-            -amd \
-            clean verify
-
-
-      # ============================================================
-      # 9. NO OSGi CHANGES
-      # ============================================================
-      - name: No OSGi build required
-        if: |
-          (github.event_name == 'pull_request' ||
-           (github.event_name == 'workflow_dispatch' &&
-            inputs.build_mode == 'changed')) &&
-          steps.changes.outputs.full_build != 'true' &&
-          steps.changes.outputs.projects == ''
-        run: |
-
-          echo
-          echo "============================================================"
-          echo "NO OSGi MODULE CHANGES"
-          echo "============================================================"
-          echo
-
-          echo "No OSGi bundle or feature was modified."
-          echo
-          echo "Skipping Maven/Tycho build."
-          echo
-
-
-      # ============================================================
-      # 10. BUILD SUMMARY
-      # ============================================================
-      - name: Build summary
-        if: always()
-        run: |
-
-          echo
-          echo "============================================================"
-          echo "NORTHWIND OMS - BUILD SUMMARY"
-          echo "============================================================"
-          echo
-
-          echo "Repository     : ${{ github.repository }}"
-          echo "Commit         : ${{ github.sha }}"
-          echo "Event          : ${{ github.event_name }}"
-          echo "Java           : 17"
-          echo "Build system   : Maven + Tycho"
-          echo
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Execution type : Manual"
-            echo "Build mode     : ${{ inputs.build_mode }}"
-          else
-            echo "Execution type : Pull Request"
-            echo "Build mode     : changed"
-          fi
-
-          echo
-
-          if [ "${{ steps.changes.outputs.full_build }}" = "true" ]; then
-            echo "Build strategy : FULL REACTOR"
-          elif [ -n "${{ steps.changes.outputs.projects }}" ]; then
-            echo "Build strategy : CHANGED + IMPACTED MODULES"
-            echo
-            echo "Changed projects:"
-            echo "${{ steps.changes.outputs.projects }}" |
-              tr ',' '\n' |
-              sed 's/^/  - /'
-          else
-            echo "Build strategy : NO OSGi BUILD REQUIRED"
-          fi
-
-          echo
-          echo "============================================================"
+        done
+        
+        echo ""
+        echo "========================================="
+        echo "🎉 PIPELINE COMPLETE - ALL STEPS SUCCESSFUL"
