@@ -42,7 +42,7 @@ jobs:
         files: |
           **
 
-    # Step 4: Dynamically calculate dependencies using Maven Reactor flags
+    # Step 4: Dynamically calculate plugin dependencies using deeper Maven target resolution
     - name: Run Build Pipeline & Analyze Dependencies
       env:
         SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
@@ -52,49 +52,48 @@ jobs:
         echo "🚀 INITIALIZING DYNAMIC OSGi BUILD PIPELINE"
         echo "========================================="
         
-        # 1. Discover all modules dynamically on the filesystem by locating pom.xml descriptors
-        # This excludes the root pom.xml to build an accurate list of individual directories
-        ALL_MODULES=$(find . -maxdepth 2 -name "pom.xml" -not -path "./pom.xml" | cut -d'/' -f2 | sort | xargs | tr ' ' ',')
+        # 1. Dynamically locate every sub-project bundle pom.xml across the entire workspace
+        # This formats the list as 'catalog/plugins/com.northwind.oms.core,orders/plugins/com.northwind.oms.gateway' etc.
+        ALL_TARGET_POMS=$(find . -mindepth 3 -name "pom.xml" | sed 's|^\./||' | sed 's|/pom.xml||' | sort | xargs | tr ' ' ',')
         
         DIRECTLY_CHANGED=""
         MAVEN_TARGETS=""
+        BUILD_FLAGS=""
 
         if [ "$SCENARIO" = "all" ]; then
           echo "Scenario Selected: 1️⃣ Build All Products"
-          # Pass all dynamically discovered modules directly to Maven
-          MAVEN_TARGETS="$ALL_MODULES"
-          BUILD_FLAGS=""
+          MAVEN_TARGETS="$ALL_TARGET_POMS"
         else
           echo "Scenario Selected: 2️⃣ Build Only Changed Products/Modules"
           echo "Analyzing file modifications..."
           
-          # Compute unique directories changed using the Git manifest list
+          # 2. Match changed files to their specific inner plugin bundle folders
           for file in $CHANGED_FILES; do
-            if [[ "$file" =~ ^([^/]+)/ ]]; then
-              DOMAIN="${BASH_REMATCH[1]}"
-              # Ensure the match is an actual project directory containing a pom.xml file
-              if [ -f "$DOMAIN/pom.xml" ] && [[ ! "$DIRECTLY_CHANGED" =~ (^|,)"$DOMAIN"(,|$) ]]; then
+            # Extract paths up to the specific plugin or feature directory level
+            if [[ "$file" =~ ^([^/]+/plugins/[^/]+|[^/]+/features/[^/]+) ]]; then
+              TARGET_DIR="${BASH_REMATCH[1]}"
+              
+              # Confirm the path contains a valid Maven descriptor and avoid duplicate entries
+              if [ -f "$TARGET_DIR/pom.xml" ] && [[ ! "$DIRECTLY_CHANGED" =~ (^|,)"$TARGET_DIR"(,|$) ]]; then
                 if [ -z "$DIRECTLY_CHANGED" ]; then
-                  DIRECTLY_CHANGED="$DOMAIN"
+                  DIRECTLY_CHANGED="$TARGET_DIR"
                 else
-                  DIRECTLY_CHANGED="$DIRECTLY_CHANGED,$DOMAIN"
+                  DIRECTLY_CHANGED="$DIRECTLY_CHANGED,$TARGET_DIR"
                 fi
               fi
             fi
           done
           
-          echo "🔎 Modules with explicit local modifications: [ $DIRECTLY_CHANGED ]"
+          echo "🔎 Specifically modified plugin paths: [ $DIRECTLY_CHANGED ]"
           
           if [ -z "$DIRECTLY_CHANGED" ]; then
-             echo "✅ No source directories modified. Pipeline clean. Exiting safely."
+             echo "✅ No source plugin directories modified. Pipeline clean. Exiting safely."
              exit 0
           fi
           
-          # Target only the changed modules, and append Maven's dependency engine flag
           MAVEN_TARGETS="$DIRECTLY_CHANGED"
-          
-          # -amd (Also Make Dependents) instructs Maven to dynamically calculate the downstream 
-          # topological graph and build every module that depends on our changed list.
+          # -amd tells Maven to dynamically check the manifest.mf of all workspace modules 
+          # to find everything that depends on these specific modified plugins
           BUILD_FLAGS="-amd"
         fi
 
@@ -105,23 +104,21 @@ jobs:
         echo "Extracting structural topological graph metadata from Maven..."
         echo "--------------------------------------------------"
         
-        # Ask Maven to evaluate and display its internal project sorting graph order
-        # without running an actual heavy code compilation step.
-        mvn validation:validate -pl "$MAVEN_TARGETS" $BUILD_FLAGS | grep -E "Building|Reactor Build Order:" -A 12 || true
+        # Run a quick validation to output the dynamic dependency order directly into the logs
+        mvn validation:validate -pl "$MAVEN_TARGETS" $BUILD_FLAGS | grep -E "Building|Reactor Build Order:" -A 15 || true
         
         echo ""
         echo "=================================================="
         echo "📋 EXECUTION MATRIX PARAMETERS"
         echo "=================================================="
-        echo " Directly Changed Source Roots: $DIRECTLY_CHANGED"
-        echo " Maven Target Flag Selection (-pl): $MAVEN_TARGETS"
+        echo " Target Plugin Selection (-pl): $MAVEN_TARGETS"
         echo " Dependent Graph Multipliers: $BUILD_FLAGS"
         echo "=================================================="
         echo ""
 
         echo "🔨 Launching Root Multi-Module Maven Reactor Process..."
-        # Compile dynamically computed graph chains sequentially
-        mvn clean package -pl "$MAVEN_TARGETS" $BUILD_FLAGS -DskipTests
+        # Compile the dynamically computed graph chain sequentially from the workspace root
+        mvn clean package -pl "$MAVEN_PROJECTS" -pl "$MAVEN_TARGETS" $BUILD_FLAGS -DskipTests
         
         echo ""
         echo "=================================================="
