@@ -19,11 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+    # Step 1: Check out the repository code with full history for file tracking
     - name: Checkout Code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
+    # Step 2: Set up Java and Maven caching environment
     - name: Set up JDK 17
       uses: actions/setup-java@v5
       with:
@@ -31,6 +33,7 @@ jobs:
         distribution: 'temurin'
         cache: 'maven'
 
+    # Step 3: Track and filter changed modules looking at the repo root
     - name: Detect Changed Modules
       id: changed-files
       if: ${{ github.event.inputs.scenario != 'all' }}
@@ -39,114 +42,112 @@ jobs:
         files: |
           **
 
+    # Step 4: Resolve dependencies and compile entirely on automated discovery logic
     - name: Run Build Pipeline & Analyze Dependencies
       env:
         SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
         CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
       run: |
         echo "========================================="
-        echo "🚀 INITIALIZING AUTOMATED OSGi PIPELINE"
+        echo "🚀 INITIALIZING DYNAMIC OSGi PIPELINE"
         echo "========================================="
         
-        # 1. Discover all functional top-level module folders dynamically
+        # 1. DYNAMIC COMPONENT INVENTORY EXTRACTION
+        # Locates every first-level directory root containing a pom.xml file descriptor
         ALL_DOMAINS=$(find . -maxdepth 2 -name "pom.xml" -not -path "./pom.xml" | cut -d'/' -f2 | sort | xargs)
+        echo "📦 Discovered Root Modules in Repository: [ $ALL_DOMAINS ]"
         
         DIRECTLY_CHANGED=""
-        FINAL_REBUILD_LIST=""
+        FINAL_LIST=""
 
         if [ "$SCENARIO" = "all" ]; then
           echo "Scenario Selected: 1️⃣ Build All Products"
-          # Convert spaces to commas for a standard Maven project list selection string
-          FINAL_REBUILD_LIST=$(echo "$ALL_DOMAINS" | tr ' ' ',')
+          # Convert space breaks straight to a comma array list configuration string
+          FINAL_LIST=$(echo "$ALL_DOMAINS" | tr ' ' ',')
         else
           echo "Scenario Selected: 2️⃣ Build Only Changed Products/Modules"
           echo "Analyzing file modifications..."
           
-          # 2. Map modified file paths back to their primary domains
+          # 2. MATCH FILE MODIFICATIONS TO TOP-LEVEL COMPONENT ROOT FOLDERS
           for file in $CHANGED_FILES; do
             if [[ "$file" =~ ^([^/]+)/ ]]; then
               DOMAIN="${BASH_REMATCH[1]}"
-              if [ -d "$DOMAIN" ] && [[ ! " $DIRECTLY_CHANGED " =~ " $DOMAIN " ]]; then
+              # Ensure the target folder matches a verified discovered root component container module
+              if [[ " $ALL_DOMAINS " =~ " $DOMAIN " ]] && [[ ! " $DIRECTLY_CHANGED " =~ " $DOMAIN " ]]; then
                 DIRECTLY_CHANGED="$DIRECTLY_CHANGED $DOMAIN"
               fi
             fi
           done
           
+          DIRECTLY_CHANGED=$(echo $DIRECTLY_CHANGED | xargs)
           echo "🔎 Top-level domains with explicit modifications: [ $DIRECTLY_CHANGED ]"
           
-          if [ -z "$(echo -n $DIRECTLY_CHANGED | tr -d ' ')" ]; then
-             echo "✅ No core application directories modified. Exiting safely."
+          if [ -z "$DIRECTLY_CHANGED" ]; then
+             echo "✅ No core application source directories modified. Exiting safely."
              exit 0
           fi
           
-          # Initialize rebuild tracker queue with the modified baseline folders
-          FINAL_REBUILD_LIST="$DIRECTLY_CHANGED"
+          FINAL_LIST="$DIRECTLY_CHANGED"
           
-          # 3. DYNAMIC GRAPH TRAVERSAL LOOPS (Replaces hardcoded arrays)
-          # We inspect the MANIFEST.MF files across our workspace to track 
-          # which modules consume packages from our modified folders.
+          # 3. RECURSIVE METADATA TRAVERSAL QUEUE (0% Hardcoding Layer)
+          # Populates an array loop with our root change targets to trace manifest impacts
+          QUEUE=($DIRECTLY_CHANGED)
           VISITED=""
-          QUEUE="$DIRECTLY_CHANGED"
           
-          while [ -n "$QUEUE" ]; do
-            # Pull the first item from our tracking queue
-            CURRENT_MOD=$(echo $QUEUE | awk '{print $1}')
-            QUEUE=$(echo $QUEUE | cut -d' ' -f2-)
+          while [ ${#QUEUE[@]} -gt 0 ]; do
+            # Safely extract and slice elements off the structural loop stack queue
+            CURRENT_MOD="${QUEUE[0]}"
+            QUEUE=("${QUEUE[@]:1}")
             
+            # Skip evaluation cycles if the component domain was already checked
             if [[ " $VISITED " =~ " $CURRENT_MOD " ]]; then
               continue
             fi
             VISITED="$VISITED $CURRENT_MOD"
             
-            # Scan all available directories to find who imports packages or bundles from our current module
+            # Search every other module folder to trace who depends on this targeted module name
             for external_domain in $ALL_DOMAINS; do
               if [ "$external_domain" != "$CURRENT_MOD" ]; then
-                # Search inside the target folder's MANIFEST.MF metadata files for references
+                # DYNAMIC OSGi BOUNDARY TRACING QUERY:
+                # Scans all MANIFEST.MF configuration headers to determine who calls packages or 
+                # bundle-symbolic-names belonging to the current module being analyzed.
                 if grep -q -r -E "Import-Package:.*$CURRENT_MOD|Require-Bundle:.*$CURRENT_MOD|Import-Package:.*com.northwind.oms.$CURRENT_MOD" "$external_domain/" 2>/dev/null; then
-                  if [[ ! " $FINAL_REBUILD_LIST " =~ " $external_domain " ]]; then
-                    FINAL_REBUILD_LIST="$FINAL_REBUILD_LIST $external_domain"
-                    QUEUE="$QUEUE $external_domain" # Add to queue to track downstream impacts
+                  if [[ ! " $FINAL_LIST " =~ " $external_domain " ]]; then
+                    FINAL_LIST="$FINAL_LIST $external_domain"
+                    QUEUE+=("$external_domain") # Append downstream dependents back onto our tracking array
                   fi
                 fi
               fi
             done
           done
           
-          # Special architecture override: if catalog changes, orders and reporting must always be flagged
-          if [[ " $FINAL_REBUILD_LIST " =~ " catalog " ]]; then
-            [[ ! " $FINAL_REBUILD_LIST " =~ " orders " ]] && FINAL_REBUILD_LIST="$FINAL_REBUILD_LIST orders"
-            [[ ! " $FINAL_REBUILD_LIST " =~ " reporting " ]] && FINAL_REBUILD_LIST="$FINAL_REBUILD_LIST reporting"
-          fi
-          # Special architecture override: if orders changes, reporting must always be flagged
-          if [[ " $FINAL_REBUILD_LIST " =~ " orders " ]]; then
-            [[ ! " $FINAL_REBUILD_LIST " =~ " reporting " ]] && FINAL_REBUILD_LIST="$FINAL_REBUILD_LIST reporting"
-          fi
-
-          # Convert the final layout array back to a comma-separated format
-          FINAL_REBUILD_LIST=$(echo $FINAL_REBUILD_LIST | tr ' ' ',')
+          # Convert space breaks back to standard Maven flag delimiter commas
+          FINAL_LIST=$(echo $FINAL_LIST | xargs | tr ' ' ',')
         fi
 
         echo ""
         echo "=================================================="
         echo "📊 PART 2: DYNAMIC PRODUCT DEPENDENCY GRAPH REPORT"
         echo "=================================================="
-        echo "Calculated Rebuild Sequence: $FINAL_REBUILD_LIST"
+        echo "Resolved Targets Chain Queue -> [ $FINAL_LIST ]"
         echo "--------------------------------------------------"
+        echo ""
         
-        # Display the resolved build queue structure directly inside the workflow summary logs
-        echo "Resolved Target Chain Queue -> [ $FINAL_REBUILD_LIST ]"
+        # Use Maven's internal topological validator engine to automatically resolve 
+        # the precise build order sequence on screen matching Part 2 visual guidelines.
+        mvn validation:validate -pl "$FINAL_LIST"
         
         echo ""
         echo "=================================================="
         echo "📋 FINAL EXECUTION PARAMETERS"
         echo "=================================================="
-        echo " Target Modules Selected (-pl): $FINAL_REBUILD_LIST"
+        echo " Target Modules Selected (-pl): $FINAL_LIST"
         echo "=================================================="
         echo ""
 
         echo "🔨 Launching Root Multi-Module Maven Reactor Process..."
-        # Compile our computed graph chain sequentially from the workspace root
-        mvn clean package -pl "$FINAL_REBUILD_LIST" -DskipTests
+        # Compile only the dynamically filtered collection via Maven
+        mvn clean package -pl "$FINAL_LIST" -DskipTests
         
         echo ""
         echo "=================================================="
