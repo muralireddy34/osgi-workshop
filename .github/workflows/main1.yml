@@ -1,0 +1,129 @@
+name: OSGi Workshop - Build Pipeline Assignment
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Choose Build Scenario'
+        required: true
+        default: 'changed'
+        type: choice
+        options:
+          - all
+          - changed
+
+jobs:
+  build-pipeline:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # Step 1: Check out the repository code with full history for file tracking
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    # Step 2: Set up Java and Maven caching environment
+    - name: Set up JDK 17
+      uses: actions/setup-java@v5
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: 'maven'
+
+    # Step 3: Track and filter changed modules looking at the repo root
+    - name: Detect Changed Modules
+      id: changed-files
+      if: ${{ github.event.inputs.scenario != 'all' }}
+      uses: tj-actions/changed-files@v44
+      with:
+        files: |
+          **
+
+    # Step 4: Dynamically calculate dependencies using Maven Reactor flags
+    - name: Run Build Pipeline & Analyze Dependencies
+      env:
+        SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
+        CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+      run: |
+        echo "========================================="
+        echo "🚀 INITIALIZING DYNAMIC OSGi BUILD PIPELINE"
+        echo "========================================="
+        
+        # 1. Discover all modules dynamically on the filesystem by locating pom.xml descriptors
+        # This excludes the root pom.xml to build an accurate list of individual directories
+        ALL_MODULES=$(find . -maxdepth 2 -name "pom.xml" -not -path "./pom.xml" | cut -d'/' -f2 | sort | xargs | tr ' ' ',')
+        
+        DIRECTLY_CHANGED=""
+        MAVEN_TARGETS=""
+
+        if [ "$SCENARIO" = "all" ]; then
+          echo "Scenario Selected: 1️⃣ Build All Products"
+          # Pass all dynamically discovered modules directly to Maven
+          MAVEN_TARGETS="$ALL_MODULES"
+          BUILD_FLAGS=""
+        else
+          echo "Scenario Selected: 2️⃣ Build Only Changed Products/Modules"
+          echo "Analyzing file modifications..."
+          
+          # Compute unique directories changed using the Git manifest list
+          for file in $CHANGED_FILES; do
+            if [[ "$file" =~ ^([^/]+)/ ]]; then
+              DOMAIN="${BASH_REMATCH[1]}"
+              # Ensure the match is an actual project directory containing a pom.xml file
+              if [ -f "$DOMAIN/pom.xml" ] && [[ ! "$DIRECTLY_CHANGED" =~ (^|,)"$DOMAIN"(,|$) ]]; then
+                if [ -z "$DIRECTLY_CHANGED" ]; then
+                  DIRECTLY_CHANGED="$DOMAIN"
+                else
+                  DIRECTLY_CHANGED="$DIRECTLY_CHANGED,$DOMAIN"
+                fi
+              fi
+            fi
+          done
+          
+          echo "🔎 Modules with explicit local modifications: [ $DIRECTLY_CHANGED ]"
+          
+          if [ -z "$DIRECTLY_CHANGED" ]; then
+             echo "✅ No source directories modified. Pipeline clean. Exiting safely."
+             exit 0
+          fi
+          
+          # Target only the changed modules, and append Maven's dependency engine flag
+          MAVEN_TARGETS="$DIRECTLY_CHANGED"
+          
+          # -amd (Also Make Dependents) instructs Maven to dynamically calculate the downstream 
+          # topological graph and build every module that depends on our changed list.
+          BUILD_FLAGS="-amd"
+        fi
+
+        echo ""
+        echo "=================================================="
+        echo "📊 PART 2: DYNAMIC PRODUCT DEPENDENCY GRAPH REPORT"
+        echo "=================================================="
+        echo "Extracting structural topological graph metadata from Maven..."
+        echo "--------------------------------------------------"
+        
+        # Ask Maven to evaluate and display its internal project sorting graph order
+        # without running an actual heavy code compilation step.
+        mvn validation:validate -pl "$MAVEN_TARGETS" $BUILD_FLAGS | grep -E "Building|Reactor Build Order:" -A 12 || true
+        
+        echo ""
+        echo "=================================================="
+        echo "📋 EXECUTION MATRIX PARAMETERS"
+        echo "=================================================="
+        echo " Directly Changed Source Roots: $DIRECTLY_CHANGED"
+        echo " Maven Target Flag Selection (-pl): $MAVEN_TARGETS"
+        echo " Dependent Graph Multipliers: $BUILD_FLAGS"
+        echo "=================================================="
+        echo ""
+
+        echo "🔨 Launching Root Multi-Module Maven Reactor Process..."
+        # Compile dynamically computed graph chains sequentially
+        mvn clean package -pl "$MAVEN_TARGETS" $BUILD_FLAGS -DskipTests
+        
+        echo ""
+        echo "=================================================="
+        echo "🎉 PIPELINE COMPLETE - ALL STEPS SUCCESSFUL"
+        echo "=================================================="
