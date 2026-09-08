@@ -53,6 +53,7 @@ jobs:
         echo "========================================="
         
         # 1. DYNAMIC COMPONENT INVENTORY EXTRACTION
+        # Locates every first-level directory root containing a pom.xml file descriptor
         ALL_DOMAINS=$(find . -maxdepth 2 -name "pom.xml" -not -path "./pom.xml" | cut -d'/' -f2 | sort | xargs)
         echo "📦 Discovered Root Modules in Repository: [ $ALL_DOMAINS ]"
         
@@ -88,11 +89,12 @@ jobs:
           
           FINAL_LIST="$DIRECTLY_CHANGED"
           
-          # 3. RECURSIVE METADATA TRAVERSAL QUEUE (Normalized Multi-Line Parsing)
+          # 3. RECURSIVE METADATA TRAVERSAL QUEUE (0% Hardcoding Layer)
           QUEUE=($DIRECTLY_CHANGED)
           VISITED=""
           
           while [ ${#QUEUE[@]} -gt 0 ]; do
+            # Safely pop the first item off the array stack
             CURRENT_MOD="${QUEUE[0]}"
             QUEUE=("${QUEUE[@]:1}")
             
@@ -134,9 +136,7 @@ jobs:
           # Trim spaces and convert to a clean comma-separated list for Maven
           FINAL_LIST=$(echo $FINAL_LIST | xargs | tr ' ' ',')
           
-          # CRITICAL ENGINE ENHANCEMENT: Append Maven's native 'Also Make Dependents' flag.
-          # This forces Maven's internal graph processor to pull in any missing leaf dependencies 
-          # (like orders or reporting) that rely on the targeted plugins at compilation runtime.
+          # Instructs Maven to dynamically compute the downstream topological graph
           BUILD_FLAGS="-amd"
         fi
 
@@ -144,11 +144,11 @@ jobs:
         echo "=================================================="
         echo "📊 PART 2: DYNAMIC PRODUCT DEPENDENCY GRAPH REPORT"
         echo "=================================================="
-        echo "Calculated Rebuild String Target List: $FINAL_LIST"
+        echo "Calculated Rebuild Target List: $FINAL_LIST"
         echo "--------------------------------------------------"
         echo ""
         
-        # Displays the fully resolved dynamic build sequence order computed by the compiler
+        # Display the fully resolved dynamic build sequence order computed by the compiler
         mvn validate -pl "$FINAL_LIST" $BUILD_FLAGS
         
         echo ""
@@ -161,6 +161,7 @@ jobs:
         echo ""
         
         echo "🔨 Launching Root Multi-Module Maven Reactor Process..."
+        # FIXED: Removed the duplicate, broken -pl flags and extra variables
         mvn clean package -pl "$FINAL_LIST" $BUILD_FLAGS -DskipTests
         
         echo ""
