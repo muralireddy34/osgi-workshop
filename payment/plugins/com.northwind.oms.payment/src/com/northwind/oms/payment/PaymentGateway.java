@@ -1,4 +1,4 @@
-// Smart build test - payment changed....
+// Smart build test - payment changed..
 
 package com.northwind.oms.payment;
 
