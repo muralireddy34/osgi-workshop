@@ -53,16 +53,17 @@ jobs:
         echo "========================================="
         
         # 1. DYNAMIC COMPONENT INVENTORY EXTRACTION
-        # Locates every first-level directory root containing a pom.xml file descriptor
         ALL_DOMAINS=$(find . -maxdepth 2 -name "pom.xml" -not -path "./pom.xml" | cut -d'/' -f2 | sort | xargs)
         echo "📦 Discovered Root Modules in Repository: [ $ALL_DOMAINS ]"
         
         DIRECTLY_CHANGED=""
         FINAL_LIST=""
+        BUILD_FLAGS=""
 
         if [ "$SCENARIO" = "all" ]; then
           echo "Scenario Selected: 1️⃣ Build All Products"
           FINAL_LIST=$(echo "$ALL_DOMAINS" | tr ' ' ',')
+          BUILD_FLAGS=""
         else
           echo "Scenario Selected: 2️⃣ Build Only Changed Products/Modules"
           echo "Analyzing file modifications..."
@@ -87,8 +88,7 @@ jobs:
           
           FINAL_LIST="$DIRECTLY_CHANGED"
           
-          # 3. RECURSIVE METADATA TRAVERSAL QUEUE (0% Hardcoding Layer)
-          # Traces how changes cascade to downstream modules using deep manifest inspection
+          # 3. RECURSIVE METADATA TRAVERSAL QUEUE (Normalized Multi-Line Parsing)
           QUEUE=($DIRECTLY_CHANGED)
           VISITED=""
           
@@ -102,17 +102,26 @@ jobs:
             VISITED="$VISITED $CURRENT_MOD"
             
             # Find the actual OSGi Bundle Symbolic Name from the inner MANIFEST.MF file
-            # e.g., mapping folder 'catalog' to bundle ID 'com.northwind.oms.core'
             SYMBOLIC_NAME=$(grep "Bundle-SymbolicName:" $CURRENT_MOD/plugins/*/META-INF/MANIFEST.MF 2>/dev/null | head -n 1 | awk '{print $2}' | cut -d';' -f1 | xargs)
-            
-            # Fallback to the domain folder word if a manifest file isn't present yet
             [ -z "$SYMBOLIC_NAME" ] && SYMBOLIC_NAME="com.northwind.oms.$CURRENT_MOD"
             
             # Scan all available directories to find who references this module's symbolic identifier
             for external_domain in $ALL_DOMAINS; do
               if [ "$external_domain" != "$CURRENT_MOD" ]; then
-                # DYNAMIC MANIFEST TRACING: Scans for raw bundle uses or package wiring triggers
-                if grep -q -r -E "$SYMBOLIC_NAME|$CURRENT_MOD" "$external_domain/plugins/" "$external_domain/features/" 2>/dev/null; then
+                
+                # Check every manifest file by flattening multi-line text wraps to bypass line break filtering gaps
+                MANIFEST_FILES=$(find $external_domain/ -name "MANIFEST.MF" 2>/dev/null)
+                MATCH_FOUND=false
+                
+                for mf in $MANIFEST_FILES; do
+                  FLATTENED_MANIFEST=$(cat "$mf" | tr -d '\n\r')
+                  if [[ "$FLATTENED_MANIFEST" =~ "$SYMBOLIC_NAME" ]] || [[ "$FLATTENED_MANIFEST" =~ "$CURRENT_MOD" ]]; then
+                    MATCH_FOUND=true
+                    break
+                  fi
+                done
+                
+                if [ "$MATCH_FOUND" = true ] || grep -q -r "$CURRENT_MOD" "$external_domain/pom.xml" 2>/dev/null; then
                   if [[ ! " $FINAL_LIST " =~ " $external_domain " ]]; then
                     FINAL_LIST="$FINAL_LIST $external_domain"
                     QUEUE+=("$external_domain")
@@ -124,29 +133,35 @@ jobs:
           
           # Trim spaces and convert to a clean comma-separated list for Maven
           FINAL_LIST=$(echo $FINAL_LIST | xargs | tr ' ' ',')
+          
+          # CRITICAL ENGINE ENHANCEMENT: Append Maven's native 'Also Make Dependents' flag.
+          # This forces Maven's internal graph processor to pull in any missing leaf dependencies 
+          # (like orders or reporting) that rely on the targeted plugins at compilation runtime.
+          BUILD_FLAGS="-amd"
         fi
 
         echo ""
         echo "=================================================="
         echo "📊 PART 2: DYNAMIC PRODUCT DEPENDENCY GRAPH REPORT"
         echo "=================================================="
-        echo "Calculated Rebuild String: $FINAL_LIST"
+        echo "Calculated Rebuild String Target List: $FINAL_LIST"
         echo "--------------------------------------------------"
         echo ""
         
-        # FIX: Changed 'validation:validate' to standard 'validate' to fix the Maven plugin prefix crash
-        mvn validate -pl "$FINAL_LIST"
+        # Displays the fully resolved dynamic build sequence order computed by the compiler
+        mvn validate -pl "$FINAL_LIST" $BUILD_FLAGS
         
         echo ""
         echo "=================================================="
         echo "📋 FINAL EXECUTION PARAMETERS"
         echo "=================================================="
         echo " Target Modules Selected (-pl): $FINAL_LIST"
+        echo " Dependency Graph Multipliers: $BUILD_FLAGS"
         echo "=================================================="
         echo ""
-
+        
         echo "🔨 Launching Root Multi-Module Maven Reactor Process..."
-        mvn clean package -pl "$FINAL_LIST" -DskipTests
+        mvn clean package -pl "$FINAL_LIST" $BUILD_FLAGS -DskipTests
         
         echo ""
         echo "=================================================="
