@@ -1,4 +1,4 @@
-// Smart build test - orders gateway changed..
+// Smart build test - orders gateway changed.
 
 package com.northwind.oms.gateway;
 
