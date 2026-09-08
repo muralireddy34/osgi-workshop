@@ -1,4 +1,4 @@
-// Smart build test - catalog core changed.....
+// Smart build test - catalog core changed..
 
 package com.northwind.oms.core.model;
 
