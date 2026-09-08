@@ -170,59 +170,54 @@ jobs:
           MAVEN_PL=$(join_csv "${ORDERED_FINAL[@]}")
         fi
 
-        # 4) Print dependency graph (ASCII) and resolved paths
+        # 4) Dynamically build and print dependency relationships (NO HARDCODING)
         echo ""
         echo "=================================================="
-        echo "📊 PRODUCT DEPENDENCY GRAPH (ASCII) & RESOLVED PATHS"
+        echo "📊 DETECTED DEPENDENCY RELATIONSHIPS (DYNAMIC)"
         echo "=================================================="
         echo "Legend: * = selected for rebuild"
         echo ""
 
-        # small helper to mark selected nodes
-        fmt_node() {
-          local name=$1
-          if [[ " ${ORDERED_FINAL[*]} " =~ " ${name} " ]]; then
-            printf "%s*" "$name"
-          else
-            printf "%s" "$name"
-          fi
-        }
-
-        # Generic topology based on common relationships in this repo (printed for clarity)
-        echo "$(fmt_node thirdparty) -> [$(fmt_node catalog), $(fmt_node customer), $(fmt_node notification), $(fmt_node security), $(fmt_node shipping), $(fmt_node payment), $(fmt_node orders), $(fmt_node reporting)]"
-        echo "$(fmt_node catalog) -> [$(fmt_node orders), $(fmt_node reporting)]"
-        echo "$(fmt_node customer) -> [$(fmt_node orders)]"
-        echo "$(fmt_node notification) -> [$(fmt_node orders)]"
-        echo "$(fmt_node security) -> [$(fmt_node orders)]"
-        echo "$(fmt_node shipping) -> [$(fmt_node orders)]"
-        echo "$(fmt_node payment) -> [$(fmt_node orders)]"
-        echo "$(fmt_node orders) -> [$(fmt_node reporting)]"
-
-        if [ "${SCENARIO}" != "all" ]; then
-          echo ""
-          echo "🔗 RESOLVED DEPENDENCY PATHS FOR CHANGED MODULES:"
-          for ch in "${DIRECTLY_CHANGED[@]}"; do
-            case "$ch" in
-              thirdparty) echo "  - thirdparty -> (impacts many modules)" ;;
-              catalog) echo "  - catalog -> orders -> reporting" ;;
-              customer) echo "  - customer -> orders -> reporting" ;;
-              notification) echo "  - notification -> orders -> reporting" ;;
-              security) echo "  - security -> orders -> reporting" ;;
-              shipping) echo "  - shipping -> orders -> reporting" ;;
-              payment) echo "  - payment -> orders -> reporting" ;;
-              orders) echo "  - orders -> reporting" ;;
-              reporting) echo "  - reporting (leaf)" ;;
-              *) echo "  - ${ch} -> (resolved dynamically)" ;;
-            esac
+        # Build dynamic dependency map from actual pom.xml files
+        declare -A DEPENDS_ON
+        for mod in "${MODULE_ORDER[@]}"; do
+          DEPS=""
+          for other in "${MODULE_ORDER[@]}"; do
+            if [ "$other" != "$mod" ]; then
+              if grep -q -r "$other" "$mod/pom.xml" 2>/dev/null || grep -q -r "com.northwind.oms.$other" "$mod/pom.xml" 2>/dev/null; then
+                DEPS="$DEPS $other"
+              fi
+            fi
           done
-        fi
+          if [ -n "$DEPS" ]; then
+            DEPENDS_ON["$mod"]="$DEPS"
+          fi
+        done
+
+        # Print each module with its dependencies
+        for mod in "${MODULE_ORDER[@]}"; do
+          MARKER=" "
+          if [[ " ${ORDERED_FINAL[*]} " =~ " ${mod} " ]]; then
+            MARKER="*"
+          fi
+          
+          if [ -n "${DEPENDS_ON[$mod]:-}" ]; then
+            echo "  $mod$MARKER -> [${DEPENDS_ON[$mod]}]"
+          else
+            echo "  $mod$MARKER"
+          fi
+        done
 
         echo ""
         echo "=================================================="
         echo "📋 FINAL CALCULATED SMART BUILD SEQUENCE"
         echo "=================================================="
+        echo "Scenario: ${SCENARIO}"
+        if [ "${SCENARIO}" != "all" ]; then
+          echo "Changed modules: ${DIRECTLY_CHANGED[*]}"
+        fi
         echo "Selected Targets (in build order): ${ORDERED_FINAL[*]}"
-        echo "Maven -pl parameter value: ${MAVEN_PL}"
+        echo "Maven -pl parameter: ${MAVEN_PL}"
         echo "=================================================="
         echo ""
 
