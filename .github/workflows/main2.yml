@@ -39,7 +39,7 @@ jobs:
         files: |
           **
 
-    - name: Run Smart Build Pipeline (bash-only)
+    - name: Run Smart Build Pipeline
       env:
         SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
         CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
