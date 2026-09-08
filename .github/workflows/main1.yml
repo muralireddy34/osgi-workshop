@@ -62,7 +62,6 @@ jobs:
 
         if [ "$SCENARIO" = "all" ]; then
           echo "Scenario Selected: 1️⃣ Build All Products"
-          # Convert space breaks straight to a comma array list configuration string
           FINAL_LIST=$(echo "$ALL_DOMAINS" | tr ' ' ',')
         else
           echo "Scenario Selected: 2️⃣ Build Only Changed Products/Modules"
@@ -72,7 +71,6 @@ jobs:
           for file in $CHANGED_FILES; do
             if [[ "$file" =~ ^([^/]+)/ ]]; then
               DOMAIN="${BASH_REMATCH[1]}"
-              # Ensure the target folder matches a verified discovered root component container module
               if [[ " $ALL_DOMAINS " =~ " $DOMAIN " ]] && [[ ! " $DIRECTLY_CHANGED " =~ " $DOMAIN " ]]; then
                 DIRECTLY_CHANGED="$DIRECTLY_CHANGED $DOMAIN"
               fi
@@ -90,38 +88,41 @@ jobs:
           FINAL_LIST="$DIRECTLY_CHANGED"
           
           # 3. RECURSIVE METADATA TRAVERSAL QUEUE (0% Hardcoding Layer)
-          # Populates an array loop with our root change targets to trace manifest impacts
+          # Traces how changes cascade to downstream modules using deep manifest inspection
           QUEUE=($DIRECTLY_CHANGED)
           VISITED=""
           
           while [ ${#QUEUE[@]} -gt 0 ]; do
-            # Safely extract and slice elements off the structural loop stack queue
             CURRENT_MOD="${QUEUE[0]}"
             QUEUE=("${QUEUE[@]:1}")
             
-            # Skip evaluation cycles if the component domain was already checked
             if [[ " $VISITED " =~ " $CURRENT_MOD " ]]; then
               continue
             fi
             VISITED="$VISITED $CURRENT_MOD"
             
-            # Search every other module folder to trace who depends on this targeted module name
+            # Find the actual OSGi Bundle Symbolic Name from the inner MANIFEST.MF file
+            # e.g., mapping folder 'catalog' to bundle ID 'com.northwind.oms.core'
+            SYMBOLIC_NAME=$(grep "Bundle-SymbolicName:" $CURRENT_MOD/plugins/*/META-INF/MANIFEST.MF 2>/dev/null | head -n 1 | awk '{print $2}' | cut -d';' -f1 | xargs)
+            
+            # Fallback to the domain folder word if a manifest file isn't present yet
+            [ -z "$SYMBOLIC_NAME" ] && SYMBOLIC_NAME="com.northwind.oms.$CURRENT_MOD"
+            
+            # Scan all available directories to find who references this module's symbolic identifier
             for external_domain in $ALL_DOMAINS; do
               if [ "$external_domain" != "$CURRENT_MOD" ]; then
-                # DYNAMIC OSGi BOUNDARY TRACING QUERY:
-                # Scans all MANIFEST.MF configuration headers to determine who calls packages or 
-                # bundle-symbolic-names belonging to the current module being analyzed.
-                if grep -q -r -E "Import-Package:.*$CURRENT_MOD|Require-Bundle:.*$CURRENT_MOD|Import-Package:.*com.northwind.oms.$CURRENT_MOD" "$external_domain/" 2>/dev/null; then
+                # DYNAMIC MANIFEST TRACING: Scans for raw bundle uses or package wiring triggers
+                if grep -q -r -E "$SYMBOLIC_NAME|$CURRENT_MOD" "$external_domain/plugins/" "$external_domain/features/" 2>/dev/null; then
                   if [[ ! " $FINAL_LIST " =~ " $external_domain " ]]; then
                     FINAL_LIST="$FINAL_LIST $external_domain"
-                    QUEUE+=("$external_domain") # Append downstream dependents back onto our tracking array
+                    QUEUE+=("$external_domain")
                   fi
                 fi
               fi
             done
           done
           
-          # Convert space breaks back to standard Maven flag delimiter commas
+          # Trim spaces and convert to a clean comma-separated list for Maven
           FINAL_LIST=$(echo $FINAL_LIST | xargs | tr ' ' ',')
         fi
 
@@ -129,13 +130,12 @@ jobs:
         echo "=================================================="
         echo "📊 PART 2: DYNAMIC PRODUCT DEPENDENCY GRAPH REPORT"
         echo "=================================================="
-        echo "Resolved Targets Chain Queue -> [ $FINAL_LIST ]"
+        echo "Calculated Rebuild String: $FINAL_LIST"
         echo "--------------------------------------------------"
         echo ""
         
-        # Use Maven's internal topological validator engine to automatically resolve 
-        # the precise build order sequence on screen matching Part 2 visual guidelines.
-        mvn validation:validate -pl "$FINAL_LIST"
+        # FIX: Changed 'validation:validate' to standard 'validate' to fix the Maven plugin prefix crash
+        mvn validate -pl "$FINAL_LIST"
         
         echo ""
         echo "=================================================="
@@ -146,7 +146,6 @@ jobs:
         echo ""
 
         echo "🔨 Launching Root Multi-Module Maven Reactor Process..."
-        # Compile only the dynamically filtered collection via Maven
         mvn clean package -pl "$FINAL_LIST" -DskipTests
         
         echo ""
