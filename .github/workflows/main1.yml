@@ -19,13 +19,11 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    # Step 1: Check out the repository code with full history for file tracking
     - name: Checkout Code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-    # Step 2: Set up Java and Maven caching environment
     - name: Set up JDK 17
       uses: actions/setup-java@v5
       with:
@@ -33,7 +31,6 @@ jobs:
         distribution: 'temurin'
         cache: 'maven'
 
-    # Step 3: Track and filter changed modules looking at the repo root
     - name: Detect Changed Modules
       id: changed-files
       if: ${{ github.event.inputs.scenario != 'all' }}
@@ -42,83 +39,114 @@ jobs:
         files: |
           **
 
-    # Step 4: Dynamically calculate plugin dependencies using deeper Maven target resolution
     - name: Run Build Pipeline & Analyze Dependencies
       env:
         SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
         CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
       run: |
         echo "========================================="
-        echo "🚀 INITIALIZING DYNAMIC OSGi BUILD PIPELINE"
+        echo "🚀 INITIALIZING AUTOMATED OSGi PIPELINE"
         echo "========================================="
         
-        # 1. Dynamically locate every sub-project bundle pom.xml across the entire workspace
-        # This formats the list as 'catalog/plugins/com.northwind.oms.core,orders/plugins/com.northwind.oms.gateway' etc.
-        ALL_TARGET_POMS=$(find . -mindepth 3 -name "pom.xml" | sed 's|^\./||' | sed 's|/pom.xml||' | sort | xargs | tr ' ' ',')
+        # 1. Discover all functional top-level module folders dynamically
+        ALL_DOMAINS=$(find . -maxdepth 2 -name "pom.xml" -not -path "./pom.xml" | cut -d'/' -f2 | sort | xargs)
         
         DIRECTLY_CHANGED=""
-        MAVEN_TARGETS=""
-        BUILD_FLAGS=""
+        FINAL_REBUILD_LIST=""
 
         if [ "$SCENARIO" = "all" ]; then
           echo "Scenario Selected: 1️⃣ Build All Products"
-          MAVEN_TARGETS="$ALL_TARGET_POMS"
+          # Convert spaces to commas for a standard Maven project list selection string
+          FINAL_REBUILD_LIST=$(echo "$ALL_DOMAINS" | tr ' ' ',')
         else
           echo "Scenario Selected: 2️⃣ Build Only Changed Products/Modules"
           echo "Analyzing file modifications..."
           
-          # 2. Match changed files to their specific inner plugin bundle folders
+          # 2. Map modified file paths back to their primary domains
           for file in $CHANGED_FILES; do
-            # Extract paths up to the specific plugin or feature directory level
-            if [[ "$file" =~ ^([^/]+/plugins/[^/]+|[^/]+/features/[^/]+) ]]; then
-              TARGET_DIR="${BASH_REMATCH[1]}"
-              
-              # Confirm the path contains a valid Maven descriptor and avoid duplicate entries
-              if [ -f "$TARGET_DIR/pom.xml" ] && [[ ! "$DIRECTLY_CHANGED" =~ (^|,)"$TARGET_DIR"(,|$) ]]; then
-                if [ -z "$DIRECTLY_CHANGED" ]; then
-                  DIRECTLY_CHANGED="$TARGET_DIR"
-                else
-                  DIRECTLY_CHANGED="$DIRECTLY_CHANGED,$TARGET_DIR"
-                fi
+            if [[ "$file" =~ ^([^/]+)/ ]]; then
+              DOMAIN="${BASH_REMATCH[1]}"
+              if [ -d "$DOMAIN" ] && [[ ! " $DIRECTLY_CHANGED " =~ " $DOMAIN " ]]; then
+                DIRECTLY_CHANGED="$DIRECTLY_CHANGED $DOMAIN"
               fi
             fi
           done
           
-          echo "🔎 Specifically modified plugin paths: [ $DIRECTLY_CHANGED ]"
+          echo "🔎 Top-level domains with explicit modifications: [ $DIRECTLY_CHANGED ]"
           
-          if [ -z "$DIRECTLY_CHANGED" ]; then
-             echo "✅ No source plugin directories modified. Pipeline clean. Exiting safely."
+          if [ -z "$(echo -n $DIRECTLY_CHANGED | tr -d ' ')" ]; then
+             echo "✅ No core application directories modified. Exiting safely."
              exit 0
           fi
           
-          MAVEN_TARGETS="$DIRECTLY_CHANGED"
-          # -amd tells Maven to dynamically check the manifest.mf of all workspace modules 
-          # to find everything that depends on these specific modified plugins
-          BUILD_FLAGS="-amd"
+          # Initialize rebuild tracker queue with the modified baseline folders
+          FINAL_REBUILD_LIST="$DIRECTLY_CHANGED"
+          
+          # 3. DYNAMIC GRAPH TRAVERSAL LOOPS (Replaces hardcoded arrays)
+          # We inspect the MANIFEST.MF files across our workspace to track 
+          # which modules consume packages from our modified folders.
+          VISITED=""
+          QUEUE="$DIRECTLY_CHANGED"
+          
+          while [ -n "$QUEUE" ]; do
+            # Pull the first item from our tracking queue
+            CURRENT_MOD=$(echo $QUEUE | awk '{print $1}')
+            QUEUE=$(echo $QUEUE | cut -d' ' -f2-)
+            
+            if [[ " $VISITED " =~ " $CURRENT_MOD " ]]; then
+              continue
+            fi
+            VISITED="$VISITED $CURRENT_MOD"
+            
+            # Scan all available directories to find who imports packages or bundles from our current module
+            for external_domain in $ALL_DOMAINS; do
+              if [ "$external_domain" != "$CURRENT_MOD" ]; then
+                # Search inside the target folder's MANIFEST.MF metadata files for references
+                if grep -q -r -E "Import-Package:.*$CURRENT_MOD|Require-Bundle:.*$CURRENT_MOD|Import-Package:.*com.northwind.oms.$CURRENT_MOD" "$external_domain/" 2>/dev/null; then
+                  if [[ ! " $FINAL_REBUILD_LIST " =~ " $external_domain " ]]; then
+                    FINAL_REBUILD_LIST="$FINAL_REBUILD_LIST $external_domain"
+                    QUEUE="$QUEUE $external_domain" # Add to queue to track downstream impacts
+                  fi
+                fi
+              fi
+            done
+          done
+          
+          # Special architecture override: if catalog changes, orders and reporting must always be flagged
+          if [[ " $FINAL_REBUILD_LIST " =~ " catalog " ]]; then
+            [[ ! " $FINAL_REBUILD_LIST " =~ " orders " ]] && FINAL_REBUILD_LIST="$FINAL_REBUILD_LIST orders"
+            [[ ! " $FINAL_REBUILD_LIST " =~ " reporting " ]] && FINAL_REBUILD_LIST="$FINAL_REBUILD_LIST reporting"
+          fi
+          # Special architecture override: if orders changes, reporting must always be flagged
+          if [[ " $FINAL_REBUILD_LIST " =~ " orders " ]]; then
+            [[ ! " $FINAL_REBUILD_LIST " =~ " reporting " ]] && FINAL_REBUILD_LIST="$FINAL_REBUILD_LIST reporting"
+          fi
+
+          # Convert the final layout array back to a comma-separated format
+          FINAL_REBUILD_LIST=$(echo $FINAL_REBUILD_LIST | tr ' ' ',')
         fi
 
         echo ""
         echo "=================================================="
         echo "📊 PART 2: DYNAMIC PRODUCT DEPENDENCY GRAPH REPORT"
         echo "=================================================="
-        echo "Extracting structural topological graph metadata from Maven..."
+        echo "Calculated Rebuild Sequence: $FINAL_REBUILD_LIST"
         echo "--------------------------------------------------"
         
-        # Run a quick validation to output the dynamic dependency order directly into the logs
-        mvn validation:validate -pl "$MAVEN_TARGETS" $BUILD_FLAGS | grep -E "Building|Reactor Build Order:" -A 15 || true
+        # Display the resolved build queue structure directly inside the workflow summary logs
+        echo "Resolved Target Chain Queue -> [ $FINAL_REBUILD_LIST ]"
         
         echo ""
         echo "=================================================="
-        echo "📋 EXECUTION MATRIX PARAMETERS"
+        echo "📋 FINAL EXECUTION PARAMETERS"
         echo "=================================================="
-        echo " Target Plugin Selection (-pl): $MAVEN_TARGETS"
-        echo " Dependent Graph Multipliers: $BUILD_FLAGS"
+        echo " Target Modules Selected (-pl): $FINAL_REBUILD_LIST"
         echo "=================================================="
         echo ""
 
         echo "🔨 Launching Root Multi-Module Maven Reactor Process..."
-        # Compile the dynamically computed graph chain sequentially from the workspace root
-        mvn clean package -pl "$MAVEN_PROJECTS" -pl "$MAVEN_TARGETS" $BUILD_FLAGS -DskipTests
+        # Compile our computed graph chain sequentially from the workspace root
+        mvn clean package -pl "$FINAL_REBUILD_LIST" -DskipTests
         
         echo ""
         echo "=================================================="
