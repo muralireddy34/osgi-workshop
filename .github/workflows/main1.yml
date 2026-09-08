@@ -19,13 +19,11 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    # Step 1: Check out the repository code with full history for file tracking
     - name: Checkout Code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-    # Step 2: Set up Java and Maven caching environment
     - name: Set up JDK 17
       uses: actions/setup-java@v5
       with:
@@ -33,7 +31,6 @@ jobs:
         distribution: 'temurin'
         cache: 'maven'
 
-    # Step 3: Track and filter changed modules looking at the repo root
     - name: Detect Changed Modules
       id: changed-files
       if: ${{ github.event.inputs.scenario != 'all' }}
@@ -42,7 +39,6 @@ jobs:
         files: |
           **
 
-    # Step 4: Resolve dependencies and compile entirely on automated discovery logic
     - name: Run Build Pipeline & Analyze Dependencies
       env:
         SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
@@ -53,18 +49,15 @@ jobs:
         echo "========================================="
         
         # 1. DYNAMIC COMPONENT INVENTORY EXTRACTION
-        # Locates every first-level directory root containing a pom.xml file descriptor
         ALL_DOMAINS=$(find . -maxdepth 2 -name "pom.xml" -not -path "./pom.xml" | cut -d'/' -f2 | sort | xargs)
         echo "📦 Discovered Root Modules in Repository: [ $ALL_DOMAINS ]"
         
         DIRECTLY_CHANGED=""
         FINAL_LIST=""
-        BUILD_FLAGS=""
 
         if [ "$SCENARIO" = "all" ]; then
           echo "Scenario Selected: 1️⃣ Build All Products"
           FINAL_LIST=$(echo "$ALL_DOMAINS" | tr ' ' ',')
-          BUILD_FLAGS=""
         else
           echo "Scenario Selected: 2️⃣ Build Only Changed Products/Modules"
           echo "Analyzing file modifications..."
@@ -89,12 +82,11 @@ jobs:
           
           FINAL_LIST="$DIRECTLY_CHANGED"
           
-          # 3. RECURSIVE METADATA TRAVERSAL QUEUE (0% Hardcoding Layer)
+          # 3. BIDIRECTIONAL METADATA GRAPH RESOLUTION (0% Hardcoding Layer)
           QUEUE=($DIRECTLY_CHANGED)
           VISITED=""
           
           while [ ${#QUEUE[@]} -gt 0 ]; do
-            # Safely pop the first item off the array stack
             CURRENT_MOD="${QUEUE[0]}"
             QUEUE=("${QUEUE[@]:1}")
             
@@ -103,26 +95,22 @@ jobs:
             fi
             VISITED="$VISITED $CURRENT_MOD"
             
-            # Find the actual OSGi Bundle Symbolic Name from the inner MANIFEST.MF file
+            # Extract Bundle-SymbolicName dynamically for this module
             SYMBOLIC_NAME=$(grep "Bundle-SymbolicName:" $CURRENT_MOD/plugins/*/META-INF/MANIFEST.MF 2>/dev/null | head -n 1 | awk '{print $2}' | cut -d';' -f1 | xargs)
             [ -z "$SYMBOLIC_NAME" ] && SYMBOLIC_NAME="com.northwind.oms.$CURRENT_MOD"
             
-            # Scan all available directories to find who references this module's symbolic identifier
+            # --- DIRECTION A: SCAN DOWNSTREAM (Who needs me?) ---
             for external_domain in $ALL_DOMAINS; do
               if [ "$external_domain" != "$CURRENT_MOD" ]; then
-                
-                # Check every manifest file by flattening multi-line text wraps to bypass line break filtering gaps
                 MANIFEST_FILES=$(find $external_domain/ -name "MANIFEST.MF" 2>/dev/null)
                 MATCH_FOUND=false
-                
                 for mf in $MANIFEST_FILES; do
-                  FLATTENED_MANIFEST=$(cat "$mf" | tr -d '\n\r')
-                  if [[ "$FLATTENED_MANIFEST" =~ "$SYMBOLIC_NAME" ]] || [[ "$FLATTENED_MANIFEST" =~ "$CURRENT_MOD" ]]; then
+                  FLATTENED=$(cat "$mf" | tr -d '\n\r')
+                  if [[ "$FLATTENED" =~ "$SYMBOLIC_NAME" ]] || [[ "$FLATTENED" =~ "$CURRENT_MOD" ]]; then
                     MATCH_FOUND=true
                     break
                   fi
                 done
-                
                 if [ "$MATCH_FOUND" = true ] || grep -q -r "$CURRENT_MOD" "$external_domain/pom.xml" 2>/dev/null; then
                   if [[ ! " $FINAL_LIST " =~ " $external_domain " ]]; then
                     FINAL_LIST="$FINAL_LIST $external_domain"
@@ -131,13 +119,28 @@ jobs:
                 fi
               fi
             done
+            
+            # --- DIRECTION B: SCAN UPSTREAM (What do I need to compile safely?) ---
+            # Flatten this current module's own manifests to find out its requirements
+            MY_MANIFESTS=$(find $CURRENT_MOD/ -name "MANIFEST.MF" 2>/dev/null)
+            for mf in $MY_MANIFESTS; do
+              FLATTENED_MY_MF=$(cat "$mf" | tr -d '\n\r')
+              for upstream_domain in $ALL_DOMAINS; do
+                if [ "$upstream_domain" != "$CURRENT_MOD" ]; then
+                  # Check if we are importing packages/bundles associated with other modules
+                  if [[ "$FLATTENED_MY_MF" =~ "$upstream_domain" ]]; then
+                    if [[ ! " $FINAL_LIST " =~ " $upstream_domain " ]]; then
+                      FINAL_LIST="$FINAL_LIST $upstream_domain"
+                      QUEUE+=("$upstream_domain") # Queue it to make sure its dependencies are pulled too
+                    fi
+                  fi
+                fi
+              done
+            done
           done
           
-          # Trim spaces and convert to a clean comma-separated list for Maven
+          # Rearrange space tokens to clean comma-separated lists for Maven routing
           FINAL_LIST=$(echo $FINAL_LIST | xargs | tr ' ' ',')
-          
-          # Instructs Maven to dynamically compute the downstream topological graph
-          BUILD_FLAGS="-amd"
         fi
 
         echo ""
@@ -149,20 +152,18 @@ jobs:
         echo ""
         
         # Display the fully resolved dynamic build sequence order computed by the compiler
-        mvn validate -pl "$FINAL_LIST" $BUILD_FLAGS
+        mvn validate -pl "$FINAL_LIST"
         
         echo ""
         echo "=================================================="
         echo "📋 FINAL EXECUTION PARAMETERS"
         echo "=================================================="
         echo " Target Modules Selected (-pl): $FINAL_LIST"
-        echo " Dependency Graph Multipliers: $BUILD_FLAGS"
         echo "=================================================="
         echo ""
         
         echo "🔨 Launching Root Multi-Module Maven Reactor Process..."
-        # FIXED: Removed the duplicate, broken -pl flags and extra variables
-        mvn clean package -pl "$FINAL_LIST" $BUILD_FLAGS -DskipTests
+        mvn clean package -pl "$FINAL_LIST" -DskipTests
         
         echo ""
         echo "=================================================="
