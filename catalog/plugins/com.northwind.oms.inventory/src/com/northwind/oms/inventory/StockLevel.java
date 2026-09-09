@@ -10,7 +10,7 @@ public final class StockLevel {
     private final int reorderThreshold;
 
     public StockLevel(String sku, int available, int reorderThreshold) {
-        this.sku = sku;
+        this.sku = sku;  
         this.available = available;
         this.reorderThreshold = reorderThreshold;
     }
