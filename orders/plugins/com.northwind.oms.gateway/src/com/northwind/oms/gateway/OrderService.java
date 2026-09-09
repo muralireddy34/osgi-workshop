@@ -6,7 +6,7 @@ import com.northwind.oms.core.model.Money;
 import com.northwind.oms.core.model.Order;
 import com.northwind.oms.core.model.OrderLine;
 import com.northwind.oms.core.spi.InsufficientStockException;
-import com.northwind.oms.core.spi.PriceCalculator;
+import com.northwind.oms.core.spi.PriceCalculator;  
 import com.northwind.oms.core.spi.StockRepository;
 
 /**
