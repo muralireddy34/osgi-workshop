@@ -2,14 +2,15 @@ name: OSGi Workshop - Smart Build Pipeline
 
 on:
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
 
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Choose Build Scenario'
+        description: "Choose Build Scenario"
         required: true
-        default: 'changed'
+        default: "changed"
         type: choice
         options:
           - all
@@ -24,35 +25,39 @@ jobs:
       # ============================================================
       # 1. CHECKOUT
       # ============================================================
-      - name: Checkout code (full history)
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       # ============================================================
-      # 2. JAVA
+      # 2. SETUP JAVA
       # ============================================================
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          java-version: "17"
+          distribution: "temurin"
           cache: maven
 
       # ============================================================
-      # 3. MAVEN
+      # 3. VERIFY JAVA AND MAVEN
       # ============================================================
-      - name: Verify Maven
+      - name: Verify Java and Maven
         run: |
+          set -euo pipefail
+
           echo "=================================================="
           echo "JAVA VERSION"
           echo "=================================================="
+
           java -version
 
           echo ""
           echo "=================================================="
           echo "MAVEN VERSION"
           echo "=================================================="
+
           mvn -version
 
       # ============================================================
@@ -84,11 +89,13 @@ jobs:
           echo "Scenario: ${SCENARIO}"
           echo ""
 
-          # --------------------------------------------------------
-          # Discover Maven modules dynamically
-          # --------------------------------------------------------
+          # ========================================================
+          # DISCOVER MAVEN MODULES
+          # ========================================================
 
-          echo "🔎 Discovering Maven modules..."
+          echo "=================================================="
+          echo "🔎 DISCOVERING MAVEN MODULES"
+          echo "=================================================="
 
           ALL_MODULES=$(
             find . \
@@ -118,10 +125,16 @@ jobs:
           done
 
           echo ""
+          echo "Total discovered modules: ${#MODULE_ORDER[@]}"
 
-          # --------------------------------------------------------
-          # Determine directly changed modules
-          # --------------------------------------------------------
+          # ========================================================
+          # DETERMINE DIRECTLY CHANGED MODULES
+          # ========================================================
+
+          echo ""
+          echo "=================================================="
+          echo "🔎 DETECTING CHANGED MODULES"
+          echo "=================================================="
 
           DIRECTLY_CHANGED=()
 
@@ -129,14 +142,15 @@ jobs:
 
             DIRECTLY_CHANGED=("${MODULE_ORDER[@]}")
 
+            echo ""
             echo "📦 Full build selected."
-            echo "Initial module set: ALL"
+            echo "All discovered modules will be considered."
 
           else
 
+            echo ""
             echo "Changed files:"
             echo "${CHANGED_FILES:-<none>}"
-            echo ""
 
             for file in ${CHANGED_FILES:-}; do
 
@@ -162,7 +176,10 @@ jobs:
 
             if [ ${#DIRECTLY_CHANGED[@]} -eq 0 ]; then
 
+              echo ""
               echo "✅ No Maven modules changed."
+              echo "Nothing to build."
+
               exit 0
 
             fi
@@ -170,19 +187,18 @@ jobs:
           fi
 
           echo ""
-          echo "🔎 Directly changed modules:"
+          echo "Directly changed modules:"
           echo ""
 
           for module in "${DIRECTLY_CHANGED[@]}"; do
-            echo "  - ${module}"
+            echo "  * ${module}"
           done
 
+          # ========================================================
+          # BUILD DEPENDENCY GRAPH
+          # ========================================================
+
           echo ""
-
-          # --------------------------------------------------------
-          # Build dynamic dependency graph
-          # --------------------------------------------------------
-
           echo "=================================================="
           echo "📊 BUILDING DYNAMIC MAVEN DEPENDENCY GRAPH"
           echo "=================================================="
@@ -236,9 +252,9 @@ jobs:
 
           echo "}" >> "${GRAPH_FILE}"
 
-          # --------------------------------------------------------
-          # Display dependency relationships
-          # --------------------------------------------------------
+          # ========================================================
+          # DISPLAY DEPENDENCY RELATIONSHIPS
+          # ========================================================
 
           echo ""
           echo "=================================================="
@@ -269,11 +285,15 @@ jobs:
           echo ""
           echo "Legend:"
           echo "  * = directly changed module"
-          echo ""
 
-          # --------------------------------------------------------
-          # Calculate dependency closure
-          # --------------------------------------------------------
+          # ========================================================
+          # CALCULATE DEPENDENCY CLOSURE
+          # ========================================================
+
+          echo ""
+          echo "=================================================="
+          echo "🔗 CALCULATING DEPENDENCY CLOSURE"
+          echo "=================================================="
 
           FINAL_SET=("${DIRECTLY_CHANGED[@]}")
           QUEUE=("${DIRECTLY_CHANGED[@]}")
@@ -291,7 +311,7 @@ jobs:
             VISITED+=("${CURRENT}")
 
             # ------------------------------------------------------
-            # Add dependencies
+            # Add dependencies of current module
             # ------------------------------------------------------
 
             if [ -n "${DEPENDS_ON[${CURRENT}]:-}" ]; then
@@ -310,7 +330,7 @@ jobs:
             fi
 
             # ------------------------------------------------------
-            # Add modules that depend on current module
+            # Add modules which depend on current module
             # ------------------------------------------------------
 
             for candidate in "${MODULE_ORDER[@]}"; do
@@ -334,9 +354,9 @@ jobs:
 
           done
 
-          # --------------------------------------------------------
-          # Preserve Maven reactor/discovered order
-          # --------------------------------------------------------
+          # ========================================================
+          # PRESERVE DISCOVERED / REACTOR ORDER
+          # ========================================================
 
           ORDERED_FINAL=()
 
@@ -350,6 +370,10 @@ jobs:
 
           done
 
+          # ========================================================
+          # BUILD MAVEN -PL VALUE
+          # ========================================================
+
           MAVEN_PL=""
 
           if [ ${#ORDERED_FINAL[@]} -gt 0 ]; then
@@ -358,13 +382,13 @@ jobs:
 
           fi
 
-          # --------------------------------------------------------
-          # Display final build sequence
-          # --------------------------------------------------------
+          # ========================================================
+          # DISPLAY FINAL BUILD PLAN
+          # ========================================================
 
           echo ""
           echo "=================================================="
-          echo "📋 FINAL SMART BUILD SEQUENCE"
+          echo "📋 FINAL SMART BUILD PLAN"
           echo "=================================================="
 
           echo ""
@@ -372,7 +396,7 @@ jobs:
           echo "  ${SCENARIO}"
 
           echo ""
-          echo "Changed modules:"
+          echo "Directly changed modules:"
           echo "  ${DIRECTLY_CHANGED[*]}"
 
           echo ""
@@ -380,7 +404,7 @@ jobs:
           echo "  ${FINAL_SET[*]}"
 
           echo ""
-          echo "Selected modules:"
+          echo "Final selected modules:"
           echo "  ${ORDERED_FINAL[*]}"
 
           echo ""
@@ -391,26 +415,24 @@ jobs:
           echo "Dependency graph:"
           echo "  ${GRAPH_FILE}"
 
+          # ========================================================
+          # MAVEN BUILD
+          # ========================================================
+
           echo ""
           echo "=================================================="
           echo "🔨 MAVEN REACTOR BUILD"
           echo "=================================================="
 
           echo ""
-          echo "Running:"
-          echo "mvn -B clean package -pl \"${MAVEN_PL}\" -am -DskipTests"
-          echo ""
+          echo "External dependencies:"
+          echo "  Maven Central / Maven cache"
 
-          # --------------------------------------------------------
-          # IMPORTANT:
-          # Native Maven is used here.
-          #
-          # External dependencies continue resolving from Maven
-          # Central/local Maven cache.
-          #
-          # We do NOT use 'jf mvn' here because jf mvn-config would
-          # make the configured Artifactory repository the resolver.
-          # --------------------------------------------------------
+          echo ""
+          echo "Build command:"
+          echo "  mvn -B clean package -pl \"${MAVEN_PL}\" -am -DskipTests"
+
+          echo ""
 
           mvn -B \
             clean package \
@@ -419,7 +441,9 @@ jobs:
             -DskipTests
 
           echo ""
-          echo "✅ Maven build completed successfully."
+          echo "=================================================="
+          echo "✅ MAVEN BUILD COMPLETED"
+          echo "=================================================="
 
       # ============================================================
       # 6. UPLOAD DEPENDENCY GRAPH
@@ -433,9 +457,36 @@ jobs:
           if-no-files-found: warn
 
       # ============================================================
-      # 7. CONFIGURE MAVEN AUTHENTICATION FOR JFROG
+      # 7. SETUP JFROG CLI
       # ============================================================
-      - name: Configure Maven Authentication for JFrog
+      - name: Setup JFrog CLI
+        if: success()
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: ${{ secrets.JFROG_URL }}
+          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
+
+      # ============================================================
+      # 8. VERIFY JFROG AUTHENTICATION
+      # ============================================================
+      - name: Verify JFrog Authentication
+        if: success()
+        run: |
+          set -euo pipefail
+
+          echo "=================================================="
+          echo "🔐 VERIFYING JFROG AUTHENTICATION"
+          echo "=================================================="
+
+          jf rt ping
+
+          echo ""
+          echo "✅ JFrog authentication/connectivity successful."
+
+      # ============================================================
+      # 9. CONFIGURE MAVEN CREDENTIALS
+      # ============================================================
+      - name: Configure Maven Authentication
         if: success()
         env:
           JFROG_USER: ${{ secrets.JFROG_USER }}
@@ -452,6 +503,7 @@ jobs:
 
           cat > "${HOME}/.m2/settings.xml" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
+
           <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
                     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                     xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
@@ -469,12 +521,16 @@ jobs:
           </settings>
           EOF
 
-          echo "✅ Maven settings.xml created."
+          chmod 600 "${HOME}/.m2/settings.xml"
+
+          echo "✅ Maven authentication configured."
+          echo ""
+          echo "Maven server ID: jfrog"
 
       # ============================================================
-      # 8. VERIFY JFROG CONNECTIVITY
+      # 10. VERIFY JFROG MAVEN REPOSITORY
       # ============================================================
-      - name: Verify JFrog Connectivity
+      - name: Verify JFrog Maven Repository
         if: success()
         env:
           JFROG_URL: ${{ secrets.JFROG_URL }}
@@ -484,28 +540,59 @@ jobs:
           set -euo pipefail
 
           echo "=================================================="
-          echo "🔎 VERIFYING JFROG CONNECTIVITY"
+          echo "🔎 VERIFYING JFROG MAVEN REPOSITORY"
           echo "=================================================="
 
-          echo "JFrog URL:"
-          echo "${JFROG_URL}"
+          REPO_URL="${JFROG_URL}/artifactory/maven-osgi-local"
 
           echo ""
-
-          curl \
-            --fail \
-            --silent \
-            --show-error \
-            --location \
-            --header "Authorization: Bearer ${JF_ACCESS_TOKEN}" \
-            "${JFROG_URL}/artifactory/api/system/ping"
+          echo "Repository:"
+          echo "  ${REPO_URL}"
 
           echo ""
+          echo "Testing authenticated access..."
+
+          HTTP_STATUS=$(
+            curl \
+              --silent \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --header "Authorization: Bearer ${JF_ACCESS_TOKEN}" \
+              "${REPO_URL}/"
+          )
+
+          echo "HTTP status: ${HTTP_STATUS}"
+
+          if [ "${HTTP_STATUS}" = "401" ]; then
+
+            echo ""
+            echo "❌ Authentication failed."
+            echo ""
+            echo "Check:"
+            echo "  - JF_ACCESS_TOKEN"
+            echo "  - Token expiration"
+            echo "  - Artifactory user"
+            echo "  - Repository permissions"
+            exit 1
+
+          fi
+
+          if [ "${HTTP_STATUS}" = "403" ]; then
+
+            echo ""
+            echo "❌ Access forbidden."
+            echo ""
+            echo "The token is recognized but the user/token"
+            echo "does not have sufficient repository permissions."
+            exit 1
+
+          fi
+
           echo ""
-          echo "✅ JFrog connectivity verified."
+          echo "✅ JFrog Maven repository is reachable."
 
       # ============================================================
-      # 9. DEPLOY ALREADY-BUILT MAVEN ARTIFACTS TO JFROG
+      # 11. DEPLOY ALREADY-BUILT ARTIFACTS
       # ============================================================
       - name: Publish Maven Artifacts to JFrog
         if: success()
@@ -521,20 +608,27 @@ jobs:
 
           JFROG_REPO_URL="${JFROG_URL}/artifactory/maven-osgi-local"
 
+          echo ""
           echo "Deployment repository:"
-          echo "${JFROG_REPO_URL}"
+          echo "  ${JFROG_REPO_URL}"
 
           echo ""
-          echo "Deploying artifacts already generated by the"
-          echo "successful Maven package phase."
+          echo "Artifacts were already generated during:"
+          echo "  mvn clean package"
+
+          echo ""
+          echo "Deploying existing Maven reactor artifacts."
 
           echo ""
           echo "IMPORTANT:"
-          echo "This step does NOT execute clean/package again."
-          echo "External dependencies continue using Maven Central."
+          echo "No 'jf mvn deploy' is used."
+          echo "Maven dependency resolution remains Maven Central."
+          echo "JFrog is used only as the deployment repository."
+
           echo ""
 
           mvn -B \
+            -s "${HOME}/.m2/settings.xml" \
             org.apache.maven.plugins:maven-deploy-plugin:3.1.4:deploy \
             -DaltDeploymentRepository=jfrog::${JFROG_REPO_URL} \
             -DretryFailedDeploymentCount=3 \
@@ -542,11 +636,11 @@ jobs:
 
           echo ""
           echo "=================================================="
-          echo "✅ JFROG DEPLOYMENT COMPLETED"
+          echo "✅ MAVEN ARTIFACTS PUBLISHED TO JFROG"
           echo "=================================================="
 
       # ============================================================
-      # 10. FINAL SUMMARY
+      # 12. FINAL SUMMARY
       # ============================================================
       - name: Build Summary
         if: always()
@@ -573,13 +667,16 @@ jobs:
           echo "maven-osgi-local"
 
           echo ""
-          echo "Pipeline status:"
+          echo "Job status:"
+          echo "${{ job.status }}"
+
           if [ "${{ job.status }}" = "success" ]; then
-            echo "✅ SUCCESS"
+            echo ""
+            echo "✅ OSGi SMART BUILD PIPELINE SUCCESSFUL"
           else
-            echo "❌ FAILED"
+            echo ""
+            echo "❌ OSGi SMART BUILD PIPELINE FAILED"
           fi
 
           echo ""
-          echo "Pipeline completed."
           echo "=================================================="
