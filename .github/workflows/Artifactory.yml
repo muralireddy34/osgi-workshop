@@ -405,58 +405,14 @@ jobs:
       # ============================================================
       - name: Configure JFrog Artifactory
         if: success()
+        uses: jfrog/setup-jfrog-cli@v4
         env:
-          JFROG_URL: ${{ secrets.JFROG_URL }}
-          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
-          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+          JF_URL: ${{ secrets.JFROG_URL }}
+          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
 
-        run: |
-
-          set -euo pipefail
-
-          if [ -z "${JFROG_URL:-}" ]; then
-            echo "❌ JFROG_URL GitHub secret is not configured."
-            exit 1
-          fi
-
-          if [ -z "${JFROG_USERNAME:-}" ]; then
-            echo "❌ JFROG_USERNAME GitHub secret is not configured."
-            exit 1
-          fi
-
-          if [ -z "${JFROG_PASSWORD:-}" ]; then
-            echo "❌ JFROG_PASSWORD GitHub secret is not configured."
-            exit 1
-          fi
-
-          echo "🔐 Configuring Maven credentials for JFrog Artifactory..."
-
-          mkdir -p "${HOME}/.m2"
-
-          cat > "${HOME}/.m2/settings.xml" <<EOF
-          <settings>
-            <servers>
-              <server>
-                <id>jfrog</id>
-                <username>${JFROG_USERNAME}</username>
-                <password>${JFROG_PASSWORD}</password>
-              </server>
-            </servers>
-          </settings>
-          EOF
-
-          echo "✅ Maven JFrog credentials configured."
-
-      # ============================================================
-      # 8. PUBLISH ARTIFACTS TO JFROG
-      # ============================================================
       - name: Publish Maven Artifacts to JFrog
         if: success()
-        env:
-          JFROG_URL: ${{ secrets.JFROG_URL }}
-
         run: |
-
           set -euo pipefail
 
           echo "=================================================="
@@ -467,16 +423,32 @@ jobs:
           echo "${JFROG_URL}"
 
           echo ""
+          echo "Testing JFrog connectivity..."
 
-          # The distributionManagement section of the parent pom.xml
-          # should point to the JFrog Maven repository.
+          jf rt ping
 
-          mvn -B deploy \
-            -DskipTests
+          echo ""
+          echo "Configuring Maven repository..."
+
+          jf mvn-config \
+            --server-id-resolve=setup-jfrog-cli-server \
+            --repo-resolve-releases=maven-osgi-local \
+            --repo-resolve-snapshots=maven-osgi-local \
+            --server-id-deploy=setup-jfrog-cli-server \
+            --repo-deploy-releases=maven-osgi-local \
+            --repo-deploy-snapshots=maven-osgi-local
+
+          echo ""
+          echo "Deploying Maven artifacts..."
+
+          jf mvn deploy \
+            -B \
+            -DskipTests \
+            --build-name=osgi-workshop \
+            --build-number="${GITHUB_RUN_NUMBER}"
 
           echo ""
           echo "✅ Artifacts successfully published to JFrog."
-
       # ============================================================
       # 9. FINAL SUMMARY
       # ============================================================
