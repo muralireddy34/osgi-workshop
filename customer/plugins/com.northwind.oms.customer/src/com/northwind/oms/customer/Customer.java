@@ -8,7 +8,7 @@ public final class Customer {
     private final String customerId;
     private final String fullName;
     private final String email;
-    private final CustomerTier tier;
+    private final CustomerTier tier;  
 
     public Customer(String customerId, String fullName, String email, CustomerTier tier) {
         if (customerId == null || customerId.isBlank()) {
