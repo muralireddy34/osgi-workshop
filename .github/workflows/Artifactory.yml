@@ -18,7 +18,7 @@ on:
 
 jobs:
   build-pipeline:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
 
