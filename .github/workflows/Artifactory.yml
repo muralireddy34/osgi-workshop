@@ -484,58 +484,55 @@ jobs:
           echo "✅ JFrog authentication/connectivity successful."
 
       # ============================================================
-      # 9. CONFIGURE MAVEN CREDENTIALS
+      # 9. PREPARE MAVEN ARTIFACTS FOR JFROG
       # ============================================================
-      - name: Configure Maven Authentication
+      - name: Prepare Maven Artifacts for JFrog
         if: success()
-        env:
-          JFROG_USER: ${{ secrets.JFROG_USER }}
-          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
-
         run: |
           set -euo pipefail
 
           echo "=================================================="
-          echo "🔐 CONFIGURING MAVEN AUTHENTICATION"
+          echo "📦 PREPARING MAVEN ARTIFACTS"
           echo "=================================================="
 
-          mkdir -p "${HOME}/.m2"
+          STAGING_REPO="${RUNNER_TEMP}/osgi-maven-staging"
 
-          cat > "${HOME}/.m2/settings.xml" <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-
-          <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
-                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                    xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
-
-            <servers>
-
-              <server>
-                <id>jfrog</id>
-                <username>${JFROG_USER}</username>
-                <password>${JF_ACCESS_TOKEN}</password>
-              </server>
-
-            </servers>
-
-          </settings>
-          EOF
-
-          chmod 600 "${HOME}/.m2/settings.xml"
-
-          echo "✅ Maven authentication configured."
           echo ""
-          echo "Maven server ID: jfrog"
+          echo "Staging repository:"
+          echo "  ${STAGING_REPO}"
+
+          rm -rf "${STAGING_REPO}"
+          mkdir -p "${STAGING_REPO}"
+
+          echo ""
+          echo "Installing already-built reactor artifacts"
+          echo "into isolated staging repository."
+
+          mvn -B \
+            org.apache.maven.plugins:maven-install-plugin:3.1.4:install \
+            -DskipTests \
+            -Dmaven.repo.local="${STAGING_REPO}"
+
+          echo ""
+          echo "✅ Maven artifacts prepared."
+
+          echo ""
+          echo "Generated Maven repository:"
+          find "${STAGING_REPO}" \
+            -type f \
+            \( \
+              -name "*.jar" \
+              -o -name "*.pom" \
+              -o -name "*.zip" \
+            \) \
+            | sort
+
 
       # ============================================================
       # 10. VERIFY JFROG MAVEN REPOSITORY
       # ============================================================
       - name: Verify JFrog Maven Repository
         if: success()
-        env:
-          JFROG_URL: ${{ secrets.JFROG_URL }}
-          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
-
         run: |
           set -euo pipefail
 
@@ -543,62 +540,29 @@ jobs:
           echo "🔎 VERIFYING JFROG MAVEN REPOSITORY"
           echo "=================================================="
 
-          REPO_URL="${JFROG_URL}/artifactory/maven-osgi-local"
+          REPO="maven-osgi-local"
 
           echo ""
-          echo "Repository:"
-          echo "  ${REPO_URL}"
+          echo "Testing JFrog authentication..."
+
+          jf rt ping
 
           echo ""
-          echo "Testing authenticated access..."
+          echo "Testing repository access..."
 
-          HTTP_STATUS=$(
-            curl \
-              --silent \
-              --output /dev/null \
-              --write-out "%{http_code}" \
-              --header "Authorization: Bearer ${JF_ACCESS_TOKEN}" \
-              "${REPO_URL}/"
-          )
-
-          echo "HTTP status: ${HTTP_STATUS}"
-
-          if [ "${HTTP_STATUS}" = "401" ]; then
-
-            echo ""
-            echo "❌ Authentication failed."
-            echo ""
-            echo "Check:"
-            echo "  - JF_ACCESS_TOKEN"
-            echo "  - Token expiration"
-            echo "  - Artifactory user"
-            echo "  - Repository permissions"
-            exit 1
-
-          fi
-
-          if [ "${HTTP_STATUS}" = "403" ]; then
-
-            echo ""
-            echo "❌ Access forbidden."
-            echo ""
-            echo "The token is recognized but the user/token"
-            echo "does not have sufficient repository permissions."
-            exit 1
-
-          fi
+          jf rt search \
+            "${REPO}/" \
+            --count
 
           echo ""
           echo "✅ JFrog Maven repository is reachable."
 
+
       # ============================================================
-      # 11. DEPLOY ALREADY-BUILT ARTIFACTS
+      # 11. PUBLISH MAVEN ARTIFACTS USING JFROG CLI
       # ============================================================
       - name: Publish Maven Artifacts to JFrog
         if: success()
-        env:
-          JFROG_URL: ${{ secrets.JFROG_URL }}
-
         run: |
           set -euo pipefail
 
@@ -606,41 +570,111 @@ jobs:
           echo "📦 PUBLISHING MAVEN ARTIFACTS TO JFROG"
           echo "=================================================="
 
-          JFROG_REPO_URL="${JFROG_URL}/artifactory/maven-osgi-local"
+          REPO="maven-osgi-local"
+          STAGING_REPO="${RUNNER_TEMP}/osgi-maven-staging"
 
           echo ""
-          echo "Deployment repository:"
-          echo "  ${JFROG_REPO_URL}"
+          echo "Source:"
+          echo "  ${STAGING_REPO}"
 
           echo ""
-          echo "Artifacts were already generated during:"
-          echo "  mvn clean package"
+          echo "Target:"
+          echo "  ${REPO}"
+
+          if [ ! -d "${STAGING_REPO}" ]; then
+            echo "❌ Maven staging repository does not exist."
+            exit 1
+          fi
+
+          # ----------------------------------------------------------
+          # Discover generated Maven group paths dynamically.
+          #
+          # Maven repositories contain metadata files as well as
+          # artifacts. Only upload actual Maven artifacts.
+          # ----------------------------------------------------------
+
+          ARTIFACT_COUNT=$(
+            find "${STAGING_REPO}" \
+              -type f \
+              \( \
+                -name "*.jar" \
+                -o -name "*.pom" \
+                -o -name "*.zip" \
+              \) \
+              | wc -l
+          )
 
           echo ""
-          echo "Deploying existing Maven reactor artifacts."
+          echo "Artifacts discovered: ${ARTIFACT_COUNT}"
+
+          if [ "${ARTIFACT_COUNT}" -eq 0 ]; then
+            echo "❌ No Maven artifacts found."
+            exit 1
+          fi
 
           echo ""
-          echo "IMPORTANT:"
-          echo "No 'jf mvn deploy' is used."
-          echo "Maven dependency resolution remains Maven Central."
-          echo "JFrog is used only as the deployment repository."
+          echo "Maven artifacts:"
+          find "${STAGING_REPO}" \
+            -type f \
+            \( \
+              -name "*.jar" \
+              -o -name "*.pom" \
+              -o -name "*.zip" \
+            \) \
+            | sort
 
           echo ""
+          echo "Uploading Maven repository..."
 
-          mvn -B \
-            -s "${HOME}/.m2/settings.xml" \
-            org.apache.maven.plugins:maven-deploy-plugin:3.1.4:deploy \
-            -DaltDeploymentRepository=jfrog::${JFROG_REPO_URL} \
-            -DretryFailedDeploymentCount=3 \
-            -DskipTests
+          jf rt upload \
+            "${STAGING_REPO}/**/*" \
+            "${REPO}/" \
+            --flat=false \
+            --fail-no-op=true
 
           echo ""
           echo "=================================================="
           echo "✅ MAVEN ARTIFACTS PUBLISHED TO JFROG"
           echo "=================================================="
 
+
       # ============================================================
-      # 12. FINAL SUMMARY
+      # 12. VERIFY PUBLISHED ARTIFACTS
+      # ============================================================
+      - name: Verify Published Maven Artifacts
+        if: success()
+        run: |
+          set -euo pipefail
+
+          echo "=================================================="
+          echo "🔎 VERIFYING PUBLISHED ARTIFACTS"
+          echo "=================================================="
+
+          REPO="maven-osgi-local"
+
+          echo ""
+          echo "Searching JFrog for Maven artifacts..."
+
+          jf rt search \
+            "${REPO}/**/*.jar" \
+            --count
+
+          echo ""
+          echo "Published JAR artifacts:"
+
+          jf rt search \
+            "${REPO}/**/*.jar" \
+            --sort-by=path \
+            --limit=100
+
+          echo ""
+          echo "=================================================="
+          echo "✅ JFROG PUBLISH VERIFICATION COMPLETED"
+          echo "=================================================="
+
+
+      # ============================================================
+      # 13. FINAL SUMMARY
       # ============================================================
       - name: Build Summary
         if: always()
