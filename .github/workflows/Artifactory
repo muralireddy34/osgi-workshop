@@ -1,0 +1,508 @@
+name: OSGi Workshop - Smart Build Pipeline
+
+on:
+  pull_request:
+    branches: [ main ]
+
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Choose Build Scenario'
+        required: true
+        default: 'changed'
+        type: choice
+        options:
+          - all
+          - changed
+
+jobs:
+  build-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
+      - name: Checkout code (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ============================================================
+      # 2. JAVA
+      # ============================================================
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # ============================================================
+      # 3. MAVEN
+      # ============================================================
+      - name: Set up Maven
+        run: |
+          mvn -version
+
+      # ============================================================
+      # 4. DETECT CHANGED FILES
+      # ============================================================
+      - name: Detect Changed Files
+        id: changed-files
+        if: ${{ github.event.inputs.scenario != 'all' }}
+        uses: tj-actions/changed-files@v44
+        with:
+          files: |
+            **
+
+      # ============================================================
+      # 5. SMART DISCOVERY + DEPENDENCY GRAPH + BUILD
+      # ============================================================
+      - name: Run Smart Build Pipeline
+        env:
+          SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
+          CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+
+        run: |
+          set -euo pipefail
+
+          echo "=================================================="
+          echo "🚀 INITIALIZING OSGi SMART BUILD PIPELINE"
+          echo "=================================================="
+          echo "Scenario: ${SCENARIO}"
+          echo ""
+
+          # --------------------------------------------------------
+          # Discover Maven modules dynamically
+          # --------------------------------------------------------
+
+          echo "🔎 Discovering Maven modules..."
+
+          ALL_MODULES=$(
+            find . -mindepth 2 -maxdepth 2 \
+              -name pom.xml \
+              -printf '%h\n' 2>/dev/null |
+              sed -E 's|^\./||' |
+              cut -d'/' -f1 |
+              sort -u |
+              xargs || true
+          )
+
+          if [ -z "${ALL_MODULES}" ]; then
+            echo "❌ No Maven modules discovered."
+            exit 1
+          fi
+
+          read -r -a MODULE_ORDER <<< "${ALL_MODULES}"
+
+          echo ""
+          echo "Discovered modules:"
+          for module in "${MODULE_ORDER[@]}"; do
+            echo "  - ${module}"
+          done
+
+          echo ""
+
+          # --------------------------------------------------------
+          # Detect directly changed modules
+          # --------------------------------------------------------
+
+          DIRECTLY_CHANGED=()
+
+          if [ "${SCENARIO}" = "all" ]; then
+
+            DIRECTLY_CHANGED=("${MODULE_ORDER[@]}")
+
+            echo "📦 Full build selected."
+            echo "Initial module set: ALL"
+
+          else
+
+            echo "Changed files:"
+            echo "${CHANGED_FILES:-<none>}"
+            echo ""
+
+            for file in ${CHANGED_FILES:-}; do
+
+              if [[ "${file}" =~ ^([^/]+)/ ]]; then
+
+                module="${BASH_REMATCH[1]}"
+
+                for discovered in "${MODULE_ORDER[@]}"; do
+
+                  if [ "${discovered}" = "${module}" ]; then
+
+                    if [[ ! " ${DIRECTLY_CHANGED[*]} " =~ " ${module} " ]]; then
+                      DIRECTLY_CHANGED+=("${module}")
+                    fi
+
+                  fi
+
+                done
+
+              fi
+
+            done
+
+            if [ ${#DIRECTLY_CHANGED[@]} -eq 0 ]; then
+              echo "✅ No Maven modules changed."
+              exit 0
+            fi
+
+          fi
+
+          echo "🔎 Directly changed modules:"
+          echo "  ${DIRECTLY_CHANGED[*]}"
+          echo ""
+
+          # --------------------------------------------------------
+          # Build dependency graph from actual pom.xml
+          # --------------------------------------------------------
+
+          echo "=================================================="
+          echo "📊 BUILDING DYNAMIC MAVEN DEPENDENCY GRAPH"
+          echo "=================================================="
+
+          declare -A DEPENDS_ON
+
+          GRAPH_FILE="osgi-dependency-graph.dot"
+
+          echo "digraph OSGiDependencies {" > "${GRAPH_FILE}"
+          echo "  rankdir=LR;" >> "${GRAPH_FILE}"
+          echo "  node [shape=box];" >> "${GRAPH_FILE}"
+
+          for module in "${MODULE_ORDER[@]}"; do
+
+            if [ ! -f "${module}/pom.xml" ]; then
+              continue
+            fi
+
+            DEPS=""
+
+            for other in "${MODULE_ORDER[@]}"; do
+
+              if [ "${other}" = "${module}" ]; then
+                continue
+              fi
+
+              if grep -q \
+                "<artifactId>${other}</artifactId>" \
+                "${module}/pom.xml" 2>/dev/null; then
+
+                DEPS="${DEPS} ${other}"
+
+              fi
+
+            done
+
+            if [ -n "${DEPS}" ]; then
+              DEPENDS_ON["${module}"]="${DEPS}"
+
+              for dependency in ${DEPS}; do
+
+                echo "  \"${module}\" -> \"${dependency}\";" \
+                  >> "${GRAPH_FILE}"
+
+              done
+            fi
+
+          done
+
+          echo "}" >> "${GRAPH_FILE}"
+
+          echo ""
+          echo "=================================================="
+          echo "📈 DETECTED DEPENDENCY RELATIONSHIPS"
+          echo "=================================================="
+          echo ""
+
+          for module in "${MODULE_ORDER[@]}"; do
+
+            MARKER=" "
+
+            if [[ " ${DIRECTLY_CHANGED[*]} " =~ " ${module} " ]]; then
+              MARKER="*"
+            fi
+
+            if [ -n "${DEPENDS_ON[${module}]:-}" ]; then
+              echo "  ${module}${MARKER} -> [${DEPENDS_ON[${module}]}]"
+            else
+              echo "  ${module}${MARKER}"
+            fi
+
+          done
+
+          echo ""
+          echo "Legend:"
+          echo "  * = directly changed module"
+          echo ""
+
+          # --------------------------------------------------------
+          # Determine dependency closure
+          # --------------------------------------------------------
+
+          FINAL_SET=("${DIRECTLY_CHANGED[@]}")
+          QUEUE=("${DIRECTLY_CHANGED[@]}")
+          VISITED=()
+
+          while [ ${#QUEUE[@]} -gt 0 ]; do
+
+            CURRENT="${QUEUE[0]}"
+            QUEUE=("${QUEUE[@]:1}")
+
+            if [[ " ${VISITED[*]} " =~ " ${CURRENT} " ]]; then
+              continue
+            fi
+
+            VISITED+=("${CURRENT}")
+
+            # ----------------------------------------------------
+            # Upstream dependencies
+            # ----------------------------------------------------
+
+            if [ -n "${DEPENDS_ON[${CURRENT}]:-}" ]; then
+
+              for dependency in ${DEPENDS_ON[${CURRENT}]}; do
+
+                if [[ ! " ${FINAL_SET[*]} " =~ " ${dependency} " ]]; then
+
+                  FINAL_SET+=("${dependency}")
+                  QUEUE+=("${dependency}")
+
+                fi
+
+              done
+
+            fi
+
+            # ----------------------------------------------------
+            # Downstream dependencies
+            # ----------------------------------------------------
+
+            for candidate in "${MODULE_ORDER[@]}"; do
+
+              if [ "${candidate}" = "${CURRENT}" ]; then
+                continue
+              fi
+
+              if [[ " ${DEPENDS_ON[${candidate}]:-} " =~ " ${CURRENT} " ]]; then
+
+                if [[ ! " ${FINAL_SET[*]} " =~ " ${candidate} " ]]; then
+
+                  FINAL_SET+=("${candidate}")
+                  QUEUE+=("${candidate}")
+
+                fi
+
+              fi
+
+            done
+
+          done
+
+          # --------------------------------------------------------
+          # Preserve discovered module order
+          # --------------------------------------------------------
+
+          ORDERED_FINAL=()
+
+          for module in "${MODULE_ORDER[@]}"; do
+
+            if [[ " ${FINAL_SET[*]} " =~ " ${module} " ]]; then
+              ORDERED_FINAL+=("${module}")
+            fi
+
+          done
+
+          # --------------------------------------------------------
+          # Create Maven reactor project list
+          # --------------------------------------------------------
+
+          MAVEN_PL=""
+
+          if [ ${#ORDERED_FINAL[@]} -gt 0 ]; then
+            MAVEN_PL=$(IFS=,; echo "${ORDERED_FINAL[*]}")
+          fi
+
+          echo ""
+          echo "=================================================="
+          echo "📋 FINAL SMART BUILD SEQUENCE"
+          echo "=================================================="
+
+          echo "Scenario:"
+          echo "  ${SCENARIO}"
+
+          echo ""
+
+          echo "Changed modules:"
+          echo "  ${DIRECTLY_CHANGED[*]}"
+
+          echo ""
+
+          echo "Dependency closure:"
+          echo "  ${FINAL_SET[*]}"
+
+          echo ""
+
+          echo "Selected modules:"
+          echo "  ${ORDERED_FINAL[*]}"
+
+          echo ""
+
+          echo "Maven -pl:"
+          echo "  ${MAVEN_PL}"
+
+          echo "=================================================="
+          echo ""
+
+          # --------------------------------------------------------
+          # Upload dependency graph later
+          # --------------------------------------------------------
+
+          echo "📊 Dependency graph generated:"
+          echo "  ${GRAPH_FILE}"
+
+          # --------------------------------------------------------
+          # Maven build
+          # --------------------------------------------------------
+
+          echo ""
+          echo "=================================================="
+          echo "🔨 MAVEN REACTOR BUILD"
+          echo "=================================================="
+
+          echo "Running:"
+          echo ""
+
+          echo "mvn -B clean package -pl \"${MAVEN_PL}\" -am -DskipTests"
+
+          echo ""
+
+          mvn -B \
+            clean package \
+            -pl "${MAVEN_PL}" \
+            -am \
+            -DskipTests
+
+          echo ""
+          echo "✅ Maven build completed successfully."
+
+      # ============================================================
+      # 6. UPLOAD DEPENDENCY GRAPH
+      # ============================================================
+      - name: Upload Dependency Graph
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osgi-dependency-graph
+          path: osgi-dependency-graph.dot
+          if-no-files-found: warn
+
+      # ============================================================
+      # 7. CONFIGURE JFROG MAVEN REPOSITORY
+      # ============================================================
+      - name: Configure JFrog Artifactory
+        if: success()
+        env:
+          JFROG_URL: ${{ secrets.JFROG_URL }}
+          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
+          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+
+        run: |
+
+          set -euo pipefail
+
+          if [ -z "${JFROG_URL:-}" ]; then
+            echo "❌ JFROG_URL GitHub secret is not configured."
+            exit 1
+          fi
+
+          if [ -z "${JFROG_USERNAME:-}" ]; then
+            echo "❌ JFROG_USERNAME GitHub secret is not configured."
+            exit 1
+          fi
+
+          if [ -z "${JFROG_PASSWORD:-}" ]; then
+            echo "❌ JFROG_PASSWORD GitHub secret is not configured."
+            exit 1
+          fi
+
+          echo "🔐 Configuring Maven credentials for JFrog Artifactory..."
+
+          mkdir -p "${HOME}/.m2"
+
+          cat > "${HOME}/.m2/settings.xml" <<EOF
+          <settings>
+            <servers>
+              <server>
+                <id>jfrog</id>
+                <username>${JFROG_USERNAME}</username>
+                <password>${JFROG_PASSWORD}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+          echo "✅ Maven JFrog credentials configured."
+
+      # ============================================================
+      # 8. PUBLISH ARTIFACTS TO JFROG
+      # ============================================================
+      - name: Publish Maven Artifacts to JFrog
+        if: success()
+        env:
+          JFROG_URL: ${{ secrets.JFROG_URL }}
+
+        run: |
+
+          set -euo pipefail
+
+          echo "=================================================="
+          echo "📦 PUBLISHING ARTIFACTS TO JFROG ARTIFACTORY"
+          echo "=================================================="
+
+          echo "JFrog URL:"
+          echo "${JFROG_URL}"
+
+          echo ""
+
+          # The distributionManagement section of the parent pom.xml
+          # should point to the JFrog Maven repository.
+
+          mvn -B deploy \
+            -DskipTests
+
+          echo ""
+          echo "✅ Artifacts successfully published to JFrog."
+
+      # ============================================================
+      # 9. FINAL SUMMARY
+      # ============================================================
+      - name: Build Summary
+        if: always()
+        run: |
+
+          echo ""
+          echo "=================================================="
+          echo "🎉 OSGi SMART BUILD PIPELINE SUMMARY"
+          echo "=================================================="
+
+          echo "Scenario:"
+          echo "${{ github.event.inputs.scenario || 'changed' }}"
+
+          echo ""
+
+          echo "Dependency graph:"
+          echo "osgi-dependency-graph.dot"
+
+          echo ""
+
+          echo "Maven:"
+          mvn -version | head -n 1
+
+          echo ""
+
+          echo "Pipeline completed."
+          echo "=================================================="
