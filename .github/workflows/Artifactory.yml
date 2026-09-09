@@ -419,10 +419,6 @@ jobs:
           echo "📦 PUBLISHING ARTIFACTS TO JFROG ARTIFACTORY"
           echo "=================================================="
 
-          echo "JFrog URL:"
-          echo "${JFROG_URL}"
-
-          echo ""
           echo "Testing JFrog connectivity..."
 
           jf rt ping
