@@ -3,7 +3,6 @@ name: OSGi Workshop - Smart Build Pipeline
 on:
   pull_request:
     branches: [ main ]
-
   workflow_dispatch:
     inputs:
       scenario:
@@ -17,22 +16,14 @@ on:
 
 jobs:
   build-pipeline:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
-
-    # ============================================================
-    # 1. CHECKOUT
-    # ============================================================
     - name: Checkout code (full history)
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-
-    # ============================================================
-    # 2. SETUP JAVA
-    # ============================================================
     - name: Set up JDK 17
       uses: actions/setup-java@v5
       with:
@@ -40,10 +31,6 @@ jobs:
         distribution: 'temurin'
         cache: 'maven'
 
-
-    # ============================================================
-    # 3. DETECT CHANGED FILES
-    # ============================================================
     - name: Detect Changed Files (only for changed scenario)
       id: changed-files
       if: ${{ github.event.inputs.scenario != 'all' }}
@@ -52,604 +39,198 @@ jobs:
         files: |
           **
 
-
-    # ============================================================
-    # 4. SMART DISCOVERY + DEPENDENCY GRAPH + BUILD
-    # ============================================================
     - name: Run Smart Build Pipeline
       env:
         SCENARIO: ${{ github.event.inputs.scenario || 'changed' }}
         CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
-
       run: |
         set -euo pipefail
-
         echo "========================================="
         echo "🚀 INITIALIZING OSGi SMART BUILD PIPELINE"
         echo "========================================="
         echo "Scenario: ${SCENARIO}"
 
-        # ========================================================
-        # DISCOVER MAVEN MODULES
-        # ========================================================
-
-        ALL_MODULES=$(
-          find . \
-            -mindepth 2 \
-            -maxdepth 2 \
-            -name pom.xml \
-            -printf '%h\n' 2>/dev/null |
-            sed -E 's|^\./||' |
-            cut -d'/' -f1 |
-            sort -u |
-            xargs || true
-        )
-
+        # Discover immediate top-level modules: folders that contain a pom.xml at depth 2 (./<module>/pom.xml)
+        ALL_MODULES=$(find . -mindepth 2 -maxdepth 2 -name pom.xml -printf '%h\n' 2>/dev/null | sed -E 's|^\./||' | cut -d'/' -f1 | sort -u | xargs || true)
         if [ -z "${ALL_MODULES}" ]; then
-          echo "No top-level modules discovered."
+          echo "No top-level modules discovered (no pom.xml found under top-level dirs). Exiting."
           exit 1
         fi
-
         read -r -a MODULE_ORDER <<< "${ALL_MODULES}"
+        echo "Discovered modules: ${MODULE_ORDER[*]}"
 
-        echo ""
-        echo "Discovered modules:"
-        printf '  - %s\n' "${MODULE_ORDER[@]}"
+        # Helper: join CSV
+        join_csv() { local IFS=,; echo "$*"; }
 
-        echo ""
-        echo "Total modules: ${#MODULE_ORDER[@]}"
-
-
-        # ========================================================
-        # DETERMINE DIRECTLY CHANGED MODULES
-        # ========================================================
-
+        # 1) Determine directly changed top-level modules
         DIRECTLY_CHANGED=()
-
         if [ "${SCENARIO}" = "all" ]; then
-
           DIRECTLY_CHANGED=("${MODULE_ORDER[@]}")
-
-          echo ""
-          echo "Full-build selected."
-          echo "All modules will be considered."
-
+          echo "Full-build selected -> initial set = all modules"
         else
-
-          echo ""
-          echo "Changed-files:"
-          echo "${CHANGED_FILES:-<none>}"
-
+          echo "Changed-files (raw): ${CHANGED_FILES:-<none>}"
           for f in ${CHANGED_FILES:-}; do
-
             if [[ "$f" =~ ^([^/]+)/ ]]; then
-
               mod="${BASH_REMATCH[1]}"
-
+              # Only keep modules that were discovered
               for m in "${MODULE_ORDER[@]}"; do
-
-                if [ "$m" = "$mod" ] &&
-                   [[ ! " ${DIRECTLY_CHANGED[*]} " =~ " $mod " ]]; then
-
+                if [ "$m" = "$mod" ] && [[ ! " ${DIRECTLY_CHANGED[*]} " =~ " $mod " ]]; then
                   DIRECTLY_CHANGED+=("$mod")
-
                 fi
-
               done
-
             fi
-
           done
 
           if [ ${#DIRECTLY_CHANGED[@]} -eq 0 ]; then
-            echo ""
-            echo "✅ No top-level modules changed."
-            echo "Nothing to build."
+            echo "✅ No top-level modules changed. Nothing to build. Exiting."
             exit 0
           fi
-
-          echo ""
-          echo "Directly changed modules:"
-          printf '  * %s\n' "${DIRECTLY_CHANGED[@]}"
-
+          echo "🔎 Top-level modules with explicit modifications: ${DIRECTLY_CHANGED[*]}"
         fi
 
-
-        # ========================================================
-        # DEPENDENCY CLOSURE
-        # ========================================================
-
+        # 2) Expand dependency closure (downstream + upstream) via MANIFEST.MF and pom.xml heuristics
         FINAL_SET=("${DIRECTLY_CHANGED[@]}")
         QUEUE=("${DIRECTLY_CHANGED[@]}")
         VISITED=()
 
         while [ ${#QUEUE[@]} -gt 0 ]; do
-
-          CURRENT="${QUEUE[0]}"
+          CURRENT=${QUEUE[0]}
           QUEUE=("${QUEUE[@]:1}")
 
-          if [[ " ${VISITED[*]} " =~ " ${CURRENT} " ]]; then
+          if [[ " ${VISITED[*]} " =~ " $CURRENT " ]]; then
             continue
           fi
-
           VISITED+=("$CURRENT")
 
-          # ------------------------------------------------------
-          # Find modules depending on CURRENT
-          # ------------------------------------------------------
-
-          for candidate in "${MODULE_ORDER[@]}"; do
-
-            [ "$candidate" = "$CURRENT" ] && continue
-
-            ref_found=false
-
-            if [ -f "$candidate/pom.xml" ]; then
-
-              if grep -q -R -- "$CURRENT" "$candidate/pom.xml" 2>/dev/null ||
-                 grep -q -R -- "com.northwind.oms.$CURRENT" "$candidate/pom.xml" 2>/dev/null; then
-
-                ref_found=true
-
-              fi
-
+          # Derive a likely Bundle-SymbolicName for the current module, if manifests exist
+          SYMBOLIC_NAME=""
+          while IFS= read -r mf; do
+            [ -z "$mf" ] && continue
+            val=$(grep -i "Bundle-SymbolicName:" "$mf" 2>/dev/null | head -n1 | sed -E 's/Bundle-SymbolicName:[[:space:]]*//I' | cut -d';' -f1 | xargs || true)
+            if [ -n "$val" ]; then
+              SYMBOLIC_NAME="$val"
+              break
             fi
+          done < <(find "$CURRENT" -maxdepth 3 -type f -path "*/META-INF/MANIFEST.MF" 2>/dev/null || true)
 
-            if [ "$ref_found" = false ]; then
+          if [ -z "$SYMBOLIC_NAME" ]; then
+            # fallback heuristic
+            SYMBOLIC_NAME="com.northwind.oms.$CURRENT"
+          fi
 
-              if grep -q -R -- "$CURRENT" "$candidate" 2>/dev/null; then
+          # A) Downstream: find modules that reference CURRENT (by folder name, or by symbolic name)
+          for candidate in "${MODULE_ORDER[@]}"; do
+            [ "$candidate" = "$CURRENT" ] && continue
+            ref_found=false
+            # check candidate's pom.xml for references
+            if [ -f "$candidate/pom.xml" ]; then
+              if grep -q -R -- "$CURRENT" "$candidate/pom.xml" 2>/dev/null || grep -q -R -- "$SYMBOLIC_NAME" "$candidate/pom.xml" 2>/dev/null; then
                 ref_found=true
               fi
-
+            fi
+            # check candidate manifests (if any)
+            if [ "$ref_found" = false ]; then
+              if grep -q -R -- "$SYMBOLIC_NAME" "$candidate" 2>/dev/null || grep -q -R -- "$CURRENT" "$candidate" 2>/dev/null; then
+                ref_found=true
+              fi
             fi
 
             if [ "$ref_found" = true ]; then
-
               if [[ ! " ${FINAL_SET[*]} " =~ " $candidate " ]]; then
-
                 FINAL_SET+=("$candidate")
                 QUEUE+=("$candidate")
-
               fi
-
             fi
-
           done
 
-
-          # ------------------------------------------------------
-          # Find modules CURRENT depends on
-          # ------------------------------------------------------
-
+          # B) Upstream: find modules referenced by CURRENT (who CURRENT depends on)
           if [ -f "$CURRENT/pom.xml" ]; then
-
             for upstream in "${MODULE_ORDER[@]}"; do
-
               [ "$upstream" = "$CURRENT" ] && continue
-
-              if grep -q -R -- "$upstream" "$CURRENT/pom.xml" 2>/dev/null ||
-                 grep -q -R -- "com.northwind.oms.$upstream" "$CURRENT/pom.xml" 2>/dev/null; then
-
+              if grep -q -R -- "$upstream" "$CURRENT/pom.xml" 2>/dev/null || grep -q -R -- "com.northwind.oms.$upstream" "$CURRENT/pom.xml" 2>/dev/null; then
                 if [[ ! " ${FINAL_SET[*]} " =~ " $upstream " ]]; then
-
                   FINAL_SET+=("$upstream")
                   QUEUE+=("$upstream")
-
                 fi
-
               fi
-
             done
-
           fi
-
         done
 
-
-        # ========================================================
-        # PRESERVE DISCOVERED ORDER
-        # ========================================================
-
+        # 3) Order FINAL_SET according to MODULE_ORDER to produce a safe build sequence
         ORDERED_FINAL=()
-
         for m in "${MODULE_ORDER[@]}"; do
-
           if [[ " ${FINAL_SET[*]} " =~ " $m " ]]; then
             ORDERED_FINAL+=("$m")
           fi
-
         done
 
-
-        # ========================================================
-        # BUILD MAVEN -PL
-        # ========================================================
-
         MAVEN_PL=""
-
         if [ ${#ORDERED_FINAL[@]} -gt 0 ]; then
-
-          MAVEN_PL=$(IFS=,; echo "${ORDERED_FINAL[*]}")
-
+          MAVEN_PL=$(join_csv "${ORDERED_FINAL[@]}")
         fi
 
-
-        # ========================================================
-        # DISPLAY DEPENDENCY RELATIONSHIPS
-        # ========================================================
-
+        # 4) Dynamically build and print dependency relationships (NO HARDCODING)
         echo ""
         echo "=================================================="
-        echo "📊 DETECTED DEPENDENCY RELATIONSHIPS"
+        echo "📊 DETECTED DEPENDENCY RELATIONSHIPS (DYNAMIC)"
         echo "=================================================="
+        echo "Legend: * = selected for rebuild"
+        echo ""
 
+        # Build dynamic dependency map from actual pom.xml files
         declare -A DEPENDS_ON
-
         for mod in "${MODULE_ORDER[@]}"; do
-
           DEPS=""
-
           for other in "${MODULE_ORDER[@]}"; do
-
             if [ "$other" != "$mod" ]; then
-
-              if grep -q -r "$other" "$mod/pom.xml" 2>/dev/null ||
-                 grep -q -r "com.northwind.oms.$other" "$mod/pom.xml" 2>/dev/null; then
-
+              if grep -q -r "$other" "$mod/pom.xml" 2>/dev/null || grep -q -r "com.northwind.oms.$other" "$mod/pom.xml" 2>/dev/null; then
                 DEPS="$DEPS $other"
-
               fi
-
             fi
-
           done
-
           if [ -n "$DEPS" ]; then
             DEPENDS_ON["$mod"]="$DEPS"
           fi
-
         done
 
-
+        # Print each module with its dependencies
         for mod in "${MODULE_ORDER[@]}"; do
-
           MARKER=" "
-
           if [[ " ${ORDERED_FINAL[*]} " =~ " ${mod} " ]]; then
             MARKER="*"
           fi
-
+          
           if [ -n "${DEPENDS_ON[$mod]:-}" ]; then
-
             echo "  $mod$MARKER -> [${DEPENDS_ON[$mod]}]"
-
           else
-
             echo "  $mod$MARKER"
-
           fi
-
         done
-
-
-        # ========================================================
-        # FINAL BUILD PLAN
-        # ========================================================
 
         echo ""
         echo "=================================================="
         echo "📋 FINAL CALCULATED SMART BUILD SEQUENCE"
         echo "=================================================="
-
         echo "Scenario: ${SCENARIO}"
-
         if [ "${SCENARIO}" != "all" ]; then
           echo "Changed modules: ${DIRECTLY_CHANGED[*]}"
         fi
-
-        echo "Selected Targets:"
-        echo "${ORDERED_FINAL[*]}"
-
-        echo ""
-        echo "Maven -pl:"
-        echo "${MAVEN_PL}"
-
+        echo "Selected Targets (in build order): ${ORDERED_FINAL[*]}"
+        echo "Maven -pl parameter: ${MAVEN_PL}"
         echo "=================================================="
-
+        echo ""
 
         if [ -z "${MAVEN_PL}" ]; then
-          echo "No modules selected for building."
+          echo "No modules selected for building. Exiting."
           exit 0
         fi
 
-
-        # ========================================================
-        # MAVEN REACTOR BUILD
-        # ========================================================
-
-        echo ""
-        echo "🔨 Launching Maven Reactor"
-
-        mvn -B \
-          clean package \
-          -pl "${MAVEN_PL}" \
-          -am \
-          -DskipTests
-
+        echo "🔨 Launching Maven Reactor:"
+        echo "mvn -B clean package -pl \"${MAVEN_PL}\" -am -DskipTests"
+        mvn -B clean package -pl "${MAVEN_PL}" -am -DskipTests
 
         echo ""
         echo "=================================================="
-        echo "🎉 MAVEN BUILD COMPLETED"
-        echo "=================================================="
-
-
-    # ============================================================
-    # 5. SETUP JFROG CLI
-    # ============================================================
-    - name: Setup JFrog CLI
-      if: success()
-      uses: jfrog/setup-jfrog-cli@v4
-      env:
-        JF_URL: ${{ secrets.JFROG_URL }}
-        JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
-
-
-    # ============================================================
-    # 6. VERIFY JFROG AUTHENTICATION
-    # ============================================================
-    - name: Verify JFrog Authentication
-      if: success()
-      run: |
-        set -euo pipefail
-
-        echo "=================================================="
-        echo "🔐 VERIFYING JFROG AUTHENTICATION"
-        echo "=================================================="
-
-        jf rt ping
-
-        echo ""
-        echo "✅ JFrog authentication successful."
-
-
-    # ============================================================
-    # 7. PREPARE MAVEN ARTIFACTS
-    # ============================================================
-    - name: Prepare Maven Artifacts for JFrog
-      if: success()
-      run: |
-        set -euo pipefail
-
-        echo "=================================================="
-        echo "📦 PREPARING MAVEN ARTIFACTS FOR JFROG"
-        echo "=================================================="
-
-        STAGING_REPO="${RUNNER_TEMP}/osgi-maven-staging"
-
-        echo ""
-        echo "Creating isolated Maven staging repository:"
-        echo "${STAGING_REPO}"
-
-        rm -rf "${STAGING_REPO}"
-        mkdir -p "${STAGING_REPO}"
-
-        echo ""
-        echo "Installing already-built Maven artifacts..."
-
-        mvn -B \
-          org.apache.maven.plugins:maven-install-plugin:3.1.4:install \
-          -DskipTests \
-          -Dmaven.repo.local="${STAGING_REPO}"
-
-        echo ""
-        echo "=================================================="
-        echo "GENERATED MAVEN ARTIFACTS"
-        echo "=================================================="
-
-        find "${STAGING_REPO}" \
-          -type f \
-          \( \
-            -name "*.jar" \
-            -o -name "*.pom" \
-            -o -name "*.zip" \
-          \) \
-          | sort
-
-        echo ""
-        echo "✅ Maven artifacts prepared."
-
-
-    # ============================================================
-    # 8. VERIFY JFROG REPOSITORY
-    # ============================================================
-    - name: Verify JFrog Maven Repository
-      if: success()
-      run: |
-        set -euo pipefail
-
-        echo "=================================================="
-        echo "🔎 VERIFYING JFROG MAVEN REPOSITORY"
-        echo "=================================================="
-
-        REPO="maven-osgi-local"
-
-        echo ""
-        echo "Testing JFrog connectivity..."
-
-        jf rt ping
-
-        echo ""
-        echo "Checking Maven repository..."
-
-        jf rt search \
-          "${REPO}/" \
-          --count
-
-        echo ""
-        echo "✅ JFrog Maven repository is reachable."
-
-
-    # ============================================================
-    # 9. PUBLISH ARTIFACTS TO JFROG
-    # ============================================================
-    - name: Publish Maven Artifacts to JFrog
-      if: success()
-      run: |
-        set -euo pipefail
-
-        echo "=================================================="
-        echo "📦 PUBLISHING MAVEN ARTIFACTS TO JFROG"
-        echo "=================================================="
-
-        REPO="maven-osgi-local"
-        STAGING_REPO="${RUNNER_TEMP}/osgi-maven-staging"
-
-        echo ""
-        echo "Source:"
-        echo "  ${STAGING_REPO}"
-
-        echo ""
-        echo "Target:"
-        echo "  ${REPO}"
-
-        if [ ! -d "${STAGING_REPO}" ]; then
-          echo "❌ Maven staging repository does not exist."
-          exit 1
-        fi
-
-
-        # ----------------------------------------------------------
-        # Count actual Maven artifacts
-        # ----------------------------------------------------------
-
-        ARTIFACT_COUNT=$(
-          find "${STAGING_REPO}" \
-            -type f \
-            \( \
-              -name "*.jar" \
-              -o -name "*.pom" \
-              -o -name "*.zip" \
-            \) \
-            | wc -l
-        )
-
-        echo ""
-        echo "Artifacts discovered: ${ARTIFACT_COUNT}"
-
-        if [ "${ARTIFACT_COUNT}" -eq 0 ]; then
-          echo "❌ No Maven artifacts found."
-          exit 1
-        fi
-
-
-        # ----------------------------------------------------------
-        # Display artifacts
-        # ----------------------------------------------------------
-
-        echo ""
-        echo "Artifacts to publish:"
-
-        find "${STAGING_REPO}" \
-          -type f \
-          \( \
-            -name "*.jar" \
-            -o -name "*.pom" \
-            -o -name "*.zip" \
-          \) \
-          | sort
-
-
-        # ----------------------------------------------------------
-        # Upload Maven repository structure
-        #
-        # --flat=false preserves Maven directory structure.
-        # ----------------------------------------------------------
-
-        echo ""
-        echo "Uploading artifacts to JFrog..."
-
-        jf rt upload \
-          "${STAGING_REPO}/**/*" \
-          "${REPO}/" \
-          --flat=false \
-          --fail-no-op=true
-
-
-        echo ""
-        echo "=================================================="
-        echo "✅ MAVEN ARTIFACTS PUBLISHED TO JFROG"
-        echo "=================================================="
-
-
-    # ============================================================
-    # 10. VERIFY PUBLISHED ARTIFACTS
-    # ============================================================
-    - name: Verify Published Maven Artifacts
-      if: success()
-      run: |
-        set -euo pipefail
-
-        echo "=================================================="
-        echo "🔎 VERIFYING PUBLISHED ARTIFACTS"
-        echo "=================================================="
-
-        REPO="maven-osgi-local"
-
-        echo ""
-        echo "Number of published JARs:"
-
-        jf rt search \
-          "${REPO}/**/*.jar" \
-          --count
-
-        echo ""
-        echo "Published JAR artifacts:"
-
-        jf rt search \
-          "${REPO}/**/*.jar" \
-          --sort-by=path \
-          --limit=100
-
-        echo ""
-        echo "=================================================="
-        echo "✅ JFROG PUBLISH VERIFICATION COMPLETED"
-        echo "=================================================="
-
-
-    # ============================================================
-    # 11. FINAL SUMMARY
-    # ============================================================
-    - name: Build Summary
-      if: always()
-      run: |
-        echo ""
-        echo "=================================================="
-        echo "🎉 OSGi SMART BUILD PIPELINE SUMMARY"
-        echo "=================================================="
-
-        echo ""
-        echo "Scenario:"
-        echo "${{ github.event.inputs.scenario || 'changed' }}"
-
-        echo ""
-        echo "Maven:"
-        mvn -version | head -n 1
-
-        echo ""
-        echo "JFrog repository:"
-        echo "maven-osgi-local"
-
-        echo ""
-        echo "Job status:"
-        echo "${{ job.status }}"
-
-        if [ "${{ job.status }}" = "success" ]; then
-          echo ""
-          echo "✅ OSGi SMART BUILD PIPELINE SUCCESSFUL"
-        else
-          echo ""
-          echo "❌ OSGi SMART BUILD PIPELINE FAILED"
-        fi
-
-        echo ""
+        echo "🎉 PIPELINE COMPLETE - ALL STEPS SUCCESSFUL"
         echo "=================================================="
