@@ -621,12 +621,20 @@ jobs:
 
           echo "BUILD_MODE=$MODE" >> "$GITHUB_ENV"
 
+          # --------------------------------------------------------
+          # Full build
+          # --------------------------------------------------------
+
           if [[ "$MODE" == "all" ]]; then
 
             echo
             echo "Full build requested."
 
             cp osgi_domains.txt changed_domains.txt
+
+          # --------------------------------------------------------
+          # Changed build
+          # --------------------------------------------------------
 
           else
 
@@ -656,11 +664,9 @@ jobs:
 
             : > changed_domains.txt
 
-            # --------------------------------------------------------
-            # If Maven metadata changes, rebuild everything.
-            #
-            # Root pom.xml or any top-level product pom.xml.
-            # --------------------------------------------------------
+            # ------------------------------------------------------
+            # Maven metadata changes can affect the complete reactor.
+            # ------------------------------------------------------
 
             if git diff --name-only "$BASE_SHA" "$HEAD_SHA" |
               grep -qE '^(pom.xml|[^/]+/pom.xml)$'; then
@@ -709,15 +715,8 @@ jobs:
           fi
 
           echo
-          echo "Changed products output:"
-
-          echo "changed_domains<<EOF" >> "$GITHUB_OUTPUT"
-
-          tr '\n' ' ' < changed_domains.txt >> "$GITHUB_OUTPUT"
-
-          echo >> "$GITHUB_OUTPUT"
-          echo "EOF"
-
+          echo "Changed products detected successfully."
+          
       # ============================================================
       # 6. Resolve all downstream dependents
       # ============================================================
