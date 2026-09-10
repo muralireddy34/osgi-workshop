@@ -44,9 +44,10 @@ jobs:
 
 
       # ============================================================
-      # 3. VERIFY ENVIRONMENT
+      # 3. VERIFY JAVA / MAVEN
       # ============================================================
       - name: Verify Java and Maven
+        shell: bash
         run: |
           set -u
 
@@ -67,30 +68,27 @@ jobs:
       # ============================================================
       # 4. DISCOVER MODULES AND OSGi METADATA
       #
-      # No product/module names are hard-coded.
+      # Nothing is hard-coded.
       #
-      # Top-level directories containing pom.xml are treated as
-      # build modules/products.
+      # We discover:
       #
-      # Inside every module we inspect:
+      #   top-level module
+      #   Maven POM hierarchy
+      #   OSGi MANIFEST.MF
+      #   Export-Package
+      #   Import-Package
+      #   Require-Bundle
+      #   feature.xml dependencies
       #
-      #   pom.xml
-      #   META-INF/MANIFEST.MF
-      #
-      # The OSGi graph is:
+      # Dependency direction:
       #
       #   provider -> consumer
       # ============================================================
-      - name: Discover modules and OSGi dependencies
+      - name: Discover modules and dependency metadata
         shell: bash
         run: |
           set -u
           set -o pipefail
-
-          echo
-          echo "========================================="
-          echo "DISCOVERING TOP-LEVEL MODULES"
-          echo "========================================="
 
           rm -f \
             modules.txt \
@@ -98,6 +96,8 @@ jobs:
             bundle_exports.txt \
             bundle_imports.txt \
             bundle_requires.txt \
+            features.txt \
+            feature_dependencies.txt \
             dependency_edges.txt
 
           touch \
@@ -106,53 +106,57 @@ jobs:
             bundle_exports.txt \
             bundle_imports.txt \
             bundle_requires.txt \
+            features.txt \
+            feature_dependencies.txt \
             dependency_edges.txt
 
 
+          echo
+          echo "========================================="
+          echo "DISCOVERING TOP-LEVEL MODULES"
+          echo "========================================="
+
+
           # --------------------------------------------------------
-          # Discover top-level modules.
-          #
-          # Example:
-          #
-          # catalog/
-          # customer/
-          # orders/
-          #
-          # No names are hard-coded.
+          # A top-level directory containing pom.xml is considered
+          # a product/module.
           # --------------------------------------------------------
           for directory in */; do
+
             directory="${directory%/}"
 
             if [[ -f "$directory/pom.xml" ]]; then
               echo "$directory" >> modules.txt
             fi
+
           done
 
           sort -u modules.txt -o modules.txt
 
+
           echo
-          echo "Discovered modules:"
+          echo "Modules discovered:"
+
           cat modules.txt
 
 
-          # --------------------------------------------------------
-          # Helper function:
-          # Read an OSGi manifest header including continuation
-          # lines.
+          # ========================================================
+          # MANIFEST HEADER PARSER
+          # ========================================================
           #
-          # OSGi manifests commonly look like:
+          # Handles continuation lines such as:
           #
-          # Import-Package: package.one,
-          #  package.two,
-          #  package.three
+          # Import-Package: a,
+          #  b,
+          #  c
           #
-          # This function joins continuation lines.
-          # --------------------------------------------------------
+          # ========================================================
           read_manifest_header() {
-            local manifest="$1"
-            local header="$2"
 
-            awk -v wanted="$header" '
+            local manifest="$1"
+            local wanted="$2"
+
+            awk -v wanted="$wanted" '
               BEGIN {
                 IGNORECASE = 1
                 found = 0
@@ -164,16 +168,24 @@ jobs:
                 sub(/\r$/, "", line)
 
                 if (line ~ "^" wanted ":[[:space:]]*") {
+
                   found = 1
+
                   sub("^" wanted ":[[:space:]]*", "", line)
+
                   value = line
+
                   next
                 }
 
                 if (found) {
+
                   if (line ~ /^[[:space:]]+/) {
+
                     sub(/^[[:space:]]+/, "", line)
+
                     value = value " " line
+
                     next
                   }
 
@@ -190,13 +202,15 @@ jobs:
           }
 
 
-          # --------------------------------------------------------
-          # Discover every OSGi bundle inside every module.
-          # --------------------------------------------------------
+          # ========================================================
+          # DISCOVER OSGi BUNDLES
+          # ========================================================
+
           echo
           echo "========================================="
           echo "DISCOVERING OSGi BUNDLES"
           echo "========================================="
+
 
           while IFS= read -r module; do
 
@@ -205,9 +219,11 @@ jobs:
             echo
             echo "Module: $module"
 
+
             while IFS= read -r manifest; do
 
               project_dir="$(dirname "$manifest")"
+
 
               bundle="$(
                 awk '
@@ -216,21 +232,28 @@ jobs:
                   }
 
                   /^Bundle-SymbolicName:/ {
+
                     value = $0
+
                     sub(/^Bundle-SymbolicName:[[:space:]]*/, "", value)
+
                     sub(/[[:space:]]*;.*/, "", value)
+
                     gsub(/\r/, "", value)
+
                     print value
+
                     exit
                   }
                 ' "$manifest"
               )"
 
-              if [[ -z "$bundle" ]]; then
-                continue
-              fi
+
+              [[ -n "$bundle" ]] || continue
+
 
               echo "$bundle|$module|$project_dir" >> bundles.txt
+
 
               echo "  Bundle : $bundle"
               echo "  Project: $project_dir"
@@ -239,61 +262,71 @@ jobs:
               # ----------------------------------------------------
               # Export-Package
               # ----------------------------------------------------
+
               exports="$(read_manifest_header "$manifest" "Export-Package")"
 
               if [[ -n "$exports" ]]; then
-                printf '%s\n' "$exports" \
-                  | tr ',' '\n' \
-                  | sed 's/^[[:space:]]*//' \
-                  | sed 's/[[:space:]]*;.*$//' \
-                  | sed '/^$/d' \
-                  | while IFS= read -r package; do
 
-                      echo "$package|$bundle|$module" \
-                        >> bundle_exports.txt
+                printf '%s\n' "$exports" |
+                  tr ',' '\n' |
+                  sed 's/^[[:space:]]*//' |
+                  sed 's/[[:space:]]*;.*$//' |
+                  sed '/^$/d' |
+                  while IFS= read -r package; do
 
-                    done
+                    echo "$package|$bundle|$module" \
+                      >> bundle_exports.txt
+
+                  done
+
               fi
 
 
               # ----------------------------------------------------
               # Import-Package
               # ----------------------------------------------------
+
               imports="$(read_manifest_header "$manifest" "Import-Package")"
 
               if [[ -n "$imports" ]]; then
-                printf '%s\n' "$imports" \
-                  | tr ',' '\n' \
-                  | sed 's/^[[:space:]]*//' \
-                  | sed 's/[[:space:]]*;.*$//' \
-                  | sed '/^$/d' \
-                  | while IFS= read -r package; do
 
-                      echo "$package|$bundle|$module" \
-                        >> bundle_imports.txt
+                printf '%s\n' "$imports" |
+                  tr ',' '\n' |
+                  sed 's/^[[:space:]]*//' |
+                  sed 's/[[:space:]]*;.*$//' |
+                  sed '/^$/d' |
+                  while IFS= read -r package; do
 
-                    done
+                    echo "$package|$bundle|$module" \
+                      >> bundle_imports.txt
+
+                  done
+
               fi
 
 
               # ----------------------------------------------------
               # Require-Bundle
               # ----------------------------------------------------
+
               requires="$(read_manifest_header "$manifest" "Require-Bundle")"
 
               if [[ -n "$requires" ]]; then
-                printf '%s\n' "$requires" \
-                  | tr ',' '\n' \
-                  | sed 's/^[[:space:]]*//' \
-                  | sed 's/[[:space:]]*;.*$//' \
-                  | sed '/^$/d' \
-                  | while IFS= read -r required_bundle; do
 
-                      echo "$required_bundle|$bundle|$module" \
-                        >> bundle_requires.txt
+                printf '%s\n' "$requires" |
+                  tr ',' '\n' |
+                  sed 's/^[[:space:]]*//' |
+                  sed 's/[[:space:]]*;.*$//' |
+                  sed '/^$/d' |
+                  while IFS= read -r required_bundle; do
 
-                    done
+                    echo "$required_bundle|$bundle|$module" \
+                      >> bundle_requires.txt
+
+                  done
+
               fi
+
 
             done < <(
               find "$module" \
@@ -312,23 +345,115 @@ jobs:
 
 
           # ========================================================
-          # BUILD OSGi DEPENDENCY GRAPH
+          # DISCOVER FEATURES
           # ========================================================
 
           echo
           echo "========================================="
-          echo "BUILDING OSGi DEPENDENCY GRAPH"
+          echo "DISCOVERING FEATURES"
           echo "========================================="
 
 
-          # --------------------------------------------------------
-          # Import-Package relationships
-          #
-          # Exporting module -> importing module
-          # --------------------------------------------------------
+          while IFS= read -r module; do
+
+            [[ -n "$module" ]] || continue
+
+
+            while IFS= read -r feature_xml; do
+
+              feature_dir="$(dirname "$feature_xml")"
+
+
+              feature_id="$(
+                awk '
+                  /<feature[[:space:]]/ {
+
+                    line = $0
+
+                    if (match(line, /id="[^\"]+"/)) {
+
+                      value = substr(
+                        line,
+                        RSTART + 4,
+                        RLENGTH - 5
+                      )
+
+                      print value
+
+                      exit
+                    }
+                  }
+                ' "$feature_xml"
+              )"
+
+
+              [[ -n "$feature_id" ]] || continue
+
+
+              echo "$feature_id|$module|$feature_dir" \
+                >> features.txt
+
+
+              echo "  Feature: $feature_id"
+
+
+              # ----------------------------------------------------
+              # Discover feature dependencies.
+              #
+              # Handles:
+              #
+              #   <import feature="..."/>
+              #
+              # and
+              #
+              #   <import feature="..." version="..."/>
+              # ----------------------------------------------------
+
+              grep -E '<import[[:space:]][^>]*feature=' "$feature_xml" 2>/dev/null |
+                while IFS= read -r line; do
+
+                  dependency="$(
+                    printf '%s\n' "$line" |
+                      sed -n 's/.*feature="\([^"]*\)".*/\1/p'
+                  )"
+
+                  if [[ -n "$dependency" ]]; then
+
+                    echo "$dependency|$feature_id|$module" \
+                      >> feature_dependencies.txt
+
+                  fi
+
+                done
+
+            done < <(
+              find "$module" \
+                -type f \
+                -name "feature.xml" \
+                2>/dev/null
+            )
+
+          done < modules.txt
+
+
+          sort -u features.txt -o features.txt
+          sort -u feature_dependencies.txt -o feature_dependencies.txt
+
+
+          # ========================================================
+          # BUILD OSGi PACKAGE DEPENDENCY EDGES
+          # ========================================================
+
+          echo
+          echo "========================================="
+          echo "BUILDING PACKAGE DEPENDENCY GRAPH"
+          echo "========================================="
+
+
           while IFS='|' read -r imported_package consumer_bundle consumer_module; do
 
             [[ -n "$imported_package" ]] || continue
+
 
             while IFS='|' read -r exported_package provider_bundle provider_module; do
 
@@ -336,9 +461,11 @@ jobs:
 
               [[ "$provider_bundle" == "$consumer_bundle" ]] && continue
 
+
               if [[ "$provider_module" != "$consumer_module" ]]; then
 
-                echo "$provider_module|$consumer_module|Import-Package:$imported_package" \
+                echo \
+                  "$provider_module|$consumer_module|Import-Package:$imported_package" \
                   >> dependency_edges.txt
 
               fi
@@ -348,14 +475,20 @@ jobs:
           done < bundle_imports.txt
 
 
-          # --------------------------------------------------------
-          # Require-Bundle relationships
-          #
-          # Required bundle's module -> requiring module
-          # --------------------------------------------------------
+          # ========================================================
+          # BUILD Require-Bundle EDGES
+          # ========================================================
+
+          echo
+          echo "========================================="
+          echo "BUILDING BUNDLE DEPENDENCY GRAPH"
+          echo "========================================="
+
+
           while IFS='|' read -r required_bundle consumer_bundle consumer_module; do
 
             [[ -n "$required_bundle" ]] || continue
+
 
             while IFS='|' read -r provider_bundle provider_module provider_project; do
 
@@ -363,9 +496,11 @@ jobs:
 
               [[ "$provider_bundle" == "$consumer_bundle" ]] && continue
 
+
               if [[ "$provider_module" != "$consumer_module" ]]; then
 
-                echo "$provider_module|$consumer_module|Require-Bundle:$required_bundle" \
+                echo \
+                  "$provider_module|$consumer_module|Require-Bundle:$required_bundle" \
                   >> dependency_edges.txt
 
               fi
@@ -375,26 +510,63 @@ jobs:
           done < bundle_requires.txt
 
 
-          sort -u dependency_edges.txt -o dependency_edges.txt
-
-
           # ========================================================
-          # DISPLAY GRAPH
+          # BUILD FEATURE DEPENDENCY EDGES
           # ========================================================
 
           echo
           echo "========================================="
-          echo "OSGi DEPENDENCY GRAPH"
+          echo "BUILDING FEATURE DEPENDENCY GRAPH"
           echo "========================================="
+
+
+          while IFS='|' read -r required_feature consumer_feature consumer_module; do
+
+            [[ -n "$required_feature" ]] || continue
+
+
+            while IFS='|' read -r provider_feature provider_module provider_dir; do
+
+              [[ "$required_feature" == "$provider_feature" ]] || continue
+
+              [[ "$provider_module" == "$consumer_module" ]] && continue
+
+
+              echo \
+                "$provider_module|$consumer_module|Feature:$required_feature" \
+                >> dependency_edges.txt
+
+            done < features.txt
+
+          done < feature_dependencies.txt
+
+
+          sort -u dependency_edges.txt -o dependency_edges.txt
+
+
+          # ========================================================
+          # DISPLAY FINAL GRAPH
+          # ========================================================
+
+          echo
+          echo "========================================="
+          echo "DISCOVERED DEPENDENCY GRAPH"
+          echo "========================================="
+
 
           if [[ -s dependency_edges.txt ]]; then
 
             while IFS='|' read -r provider consumer reason; do
-              echo "$provider -> $consumer [$reason]"
+
+              echo "$provider -> $consumer"
+              echo "    $reason"
+
             done < dependency_edges.txt
 
           else
-            echo "No cross-module OSGi dependencies discovered."
+
+            echo "No cross-module dependencies discovered."
+
           fi
 
 
@@ -411,32 +583,31 @@ jobs:
           echo "DETECTING CHANGED MODULES"
           echo "========================================="
 
+
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+
             BUILD_MODE="${{ inputs.build_mode }}"
+
           else
+
             BUILD_MODE="changed"
+
           fi
 
-          echo "Build mode: $BUILD_MODE"
 
           echo "BUILD_MODE=$BUILD_MODE" >> "$GITHUB_ENV"
+
 
           rm -f changed_modules.txt
           touch changed_modules.txt
 
 
-          # --------------------------------------------------------
-          # ALL MODE
-          # --------------------------------------------------------
           if [[ "$BUILD_MODE" == "all" ]]; then
 
             cp modules.txt changed_modules.txt
 
           else
 
-            # ------------------------------------------------------
-            # Determine comparison point.
-            # ------------------------------------------------------
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
 
               BASE_SHA="${{ github.event.pull_request.base.sha }}"
@@ -452,11 +623,6 @@ jobs:
             fi
 
 
-            echo "Comparing:"
-            echo "  BASE: $BASE_SHA"
-            echo "  HEAD: $(git rev-parse HEAD)"
-
-
             git diff \
               --name-only \
               "$BASE_SHA" HEAD \
@@ -469,13 +635,10 @@ jobs:
 
 
             # ------------------------------------------------------
-            # If root pom.xml changed, rebuild everything.
+            # Root POM change means entire reactor can be affected.
             # ------------------------------------------------------
-            if grep -Fxq "pom.xml" changed_files.txt 2>/dev/null; then
 
-              echo
-              echo "Root pom.xml changed."
-              echo "All modules will be rebuilt."
+            if grep -Fxq "pom.xml" changed_files.txt 2>/dev/null; then
 
               cp modules.txt changed_modules.txt
 
@@ -485,7 +648,9 @@ jobs:
 
                 [[ -n "$file" ]] || continue
 
+
                 first_directory="${file%%/*}"
+
 
                 if grep -Fxq "$first_directory" modules.txt; then
 
@@ -508,6 +673,7 @@ jobs:
           echo "CHANGED MODULES"
           echo "========================================="
 
+
           if [[ -s changed_modules.txt ]]; then
             cat changed_modules.txt
           else
@@ -516,37 +682,52 @@ jobs:
 
 
       # ============================================================
-      # 6. FIND ALL TRANSITIVE DEPENDENTS
+      # 6. RESOLVE COMPLETE IMPACTED CLOSURE
+      #
+      # THIS IS THE IMPORTANT FIX.
+      #
+      # We calculate BOTH:
+      #
+      #   upstream dependencies
+      #
+      # AND:
+      #
+      #   downstream dependents
       #
       # Example:
       #
-      # catalog -> orders
-      # orders  -> reporting
+      #   catalog ------\
+      #                  \
+      #                   orders ----> reporting
+      #                  /
+      #   thirdparty ---/
       #
-      # Change:
+      # If orders changes:
       #
-      # catalog
+      #   catalog
+      #   thirdparty
+      #   orders
+      #   reporting
       #
-      # Result:
+      # If catalog changes:
       #
-      # catalog
-      # orders
-      # reporting
+      #   catalog
+      #   orders
+      #   reporting
       # ============================================================
-      - name: Resolve impacted modules
+      - name: Resolve complete impacted dependency closure
         shell: bash
         run: |
           set -u
 
           echo
           echo "========================================="
-          echo "RESOLVING IMPACTED MODULES"
+          echo "RESOLVING COMPLETE IMPACTED CLOSURE"
           echo "========================================="
+
 
           rm -f impacted_modules.txt
           touch impacted_modules.txt
-
-          cp changed_modules.txt impacted_modules.txt
 
 
           if [[ "$BUILD_MODE" == "all" ]]; then
@@ -555,16 +736,85 @@ jobs:
 
           else
 
+            cp changed_modules.txt impacted_modules.txt
+
+
+            # ======================================================
+            # PASS 1
+            #
+            # Find UPSTREAM dependencies.
+            #
+            # If:
+            #
+            #   catalog -> orders
+            #
+            # and orders changed,
+            #
+            # add catalog.
+            # ======================================================
+
             changed=1
 
             while [[ "$changed" -eq 1 ]]; do
 
               changed=0
 
+
               while IFS='|' read -r provider consumer reason; do
 
                 [[ -n "$provider" ]] || continue
                 [[ -n "$consumer" ]] || continue
+
+
+                if grep -Fxq "$consumer" impacted_modules.txt \
+                  && ! grep -Fxq "$provider" impacted_modules.txt; then
+
+                  echo "$provider" >> impacted_modules.txt
+
+                  changed=1
+
+
+                  echo
+                  echo "UPSTREAM dependency required:"
+                  echo "  $provider -> $consumer"
+                  echo "  Reason: $reason"
+
+                fi
+
+              done < dependency_edges.txt
+
+
+              sort -u impacted_modules.txt -o impacted_modules.txt
+
+            done
+
+
+            # ======================================================
+            # PASS 2
+            #
+            # Find DOWNSTREAM dependents.
+            #
+            # If:
+            #
+            #   orders -> reporting
+            #
+            # and orders is impacted,
+            #
+            # add reporting.
+            # ======================================================
+
+            changed=1
+
+            while [[ "$changed" -eq 1 ]]; do
+
+              changed=0
+
+
+              while IFS='|' read -r provider consumer reason; do
+
+                [[ -n "$provider" ]] || continue
+                [[ -n "$consumer" ]] || continue
+
 
                 if grep -Fxq "$provider" impacted_modules.txt \
                   && ! grep -Fxq "$consumer" impacted_modules.txt; then
@@ -573,8 +823,9 @@ jobs:
 
                   changed=1
 
+
                   echo
-                  echo "Impact detected:"
+                  echo "DOWNSTREAM dependent required:"
                   echo "  $provider -> $consumer"
                   echo "  Reason: $reason"
 
@@ -592,7 +843,7 @@ jobs:
 
           echo
           echo "========================================="
-          echo "IMPACTED MODULES"
+          echo "COMPLETE IMPACTED MODULE SET"
           echo "========================================="
 
           if [[ -s impacted_modules.txt ]]; then
@@ -603,17 +854,13 @@ jobs:
 
 
       # ============================================================
-      # 7. CALCULATE MODULE BUILD ORDER
+      # 7. CALCULATE TOPOLOGICAL BUILD ORDER
       #
-      # Dependencies are always built first.
+      # Only impacted modules are considered.
       #
-      # provider -> consumer
-      #
-      # Therefore:
-      #
-      # catalog
-      # orders
-      # reporting
+      # A module can be built only when all of its impacted
+      # dependencies have already been removed from the remaining
+      # set.
       # ============================================================
       - name: Calculate dependency build order
         shell: bash
@@ -622,11 +869,13 @@ jobs:
 
           echo
           echo "========================================="
-          echo "CALCULATING BUILD ORDER"
+          echo "CALCULATING DEPENDENCY BUILD ORDER"
           echo "========================================="
+
 
           rm -f build_order.txt
           touch build_order.txt
+
 
           cp impacted_modules.txt remaining_modules.txt
 
@@ -640,21 +889,25 @@ jobs:
 
               [[ -n "$candidate" ]] || continue
 
+
               ready=1
 
 
               # ----------------------------------------------------
-              # Candidate cannot be built while one of its
-              # dependencies is still remaining.
+              # Check whether this candidate has an impacted
+              # provider/dependency still waiting to be built.
               # ----------------------------------------------------
+
               while IFS='|' read -r provider consumer reason; do
 
                 [[ -n "$provider" ]] || continue
+
 
                 if [[ "$consumer" == "$candidate" ]] \
                   && grep -Fxq "$provider" remaining_modules.txt; then
 
                   ready=0
+
                   break
 
                 fi
@@ -666,10 +919,13 @@ jobs:
 
                 echo "$candidate" >> build_order.txt
 
+
                 grep -Fxv "$candidate" remaining_modules.txt \
                   > remaining_modules.tmp || true
 
+
                 mv remaining_modules.tmp remaining_modules.txt
+
 
                 progress=1
 
@@ -680,19 +936,16 @@ jobs:
             done < remaining_modules.txt
 
 
-            # ------------------------------------------------------
-            # Prevent infinite loop on a dependency cycle.
-            # ------------------------------------------------------
             if [[ "$progress" -eq 0 ]]; then
 
               echo
-              echo "ERROR: Unable to determine dependency order."
+              echo "ERROR: Dependency cycle or unresolved dependency."
               echo
               echo "Remaining modules:"
               cat remaining_modules.txt
-
               echo
-              echo "Possible dependency cycle or unresolved dependency."
+              echo "Dependency graph:"
+              cat dependency_edges.txt
 
               exit 1
 
@@ -703,29 +956,24 @@ jobs:
 
           echo
           echo "========================================="
-          echo "FINAL MODULE BUILD ORDER"
+          echo "FINAL BUILD ORDER"
           echo "========================================="
 
-          counter=1
+
+          number=1
+
 
           while IFS= read -r module; do
 
-            echo "$counter. $module"
+            echo "$number. $module"
 
-            counter=$((counter + 1))
+            number=$((number + 1))
 
           done < build_order.txt
 
 
       # ============================================================
       # 8. SHOW BUILD PLAN
-      #
-      # IMPORTANT:
-      #
-      # We do NOT generate a Maven -pl project list.
-      #
-      # Each top-level module is entered and built using its own
-      # Maven/Tycho reactor.
       # ============================================================
       - name: Show build plan
         shell: bash
@@ -737,26 +985,59 @@ jobs:
           echo "BUILD PLAN"
           echo "========================================="
 
+
           echo
           echo "Build mode:"
           echo "  $BUILD_MODE"
 
+
           echo
           echo "Changed modules:"
-          cat changed_modules.txt || true
+          if [[ -s changed_modules.txt ]]; then
+            cat changed_modules.txt
+          else
+            echo "  None"
+          fi
+
 
           echo
           echo "Impacted modules:"
-          cat impacted_modules.txt || true
+          if [[ -s impacted_modules.txt ]]; then
+            cat impacted_modules.txt
+          else
+            echo "  None"
+          fi
+
 
           echo
           echo "Build order:"
-          cat build_order.txt || true
+
+
+          if [[ -s build_order.txt ]]; then
+
+            number=1
+
+            while IFS= read -r module; do
+
+              echo "  $number. $module"
+
+              number=$((number + 1))
+
+            done < build_order.txt
+
+          else
+
+            echo "  None"
+
+          fi
+
 
           echo
-          echo "Each module will be built from INSIDE its own directory."
+          echo "Build strategy:"
+          echo "  Each top-level module is entered directly."
+          echo "  Maven/Tycho builds the module's own reactor."
           echo
-          echo "Command used for each module:"
+          echo "Command:"
           echo "  cd <module>"
           echo "  mvn -B clean package -DskipTests"
 
@@ -764,16 +1045,18 @@ jobs:
       # ============================================================
       # 9. BUILD
       #
-      # CHANGED MODE:
+      # CHANGED:
       #
-      #   cd module
+      #   cd <module>
       #   mvn clean package
       #
-      # ALL MODE:
+      # No -pl.
       #
-      #   Run the complete root reactor.
+      # No generated project list.
+      #
+      # Maven/Tycho uses the module's own pom.xml hierarchy.
       # ============================================================
-      - name: Build modules
+      - name: Build impacted modules
         shell: bash
         run: |
           set -u
@@ -785,26 +1068,30 @@ jobs:
 
 
           # ========================================================
-          # ALL
+          # ALL MODE
           # ========================================================
+
           if [[ "$BUILD_MODE" == "all" ]]; then
 
             echo
             echo "Scenario: ALL"
-            echo "Building complete Maven/Tycho reactor."
+            echo
+            echo "Building complete root Maven/Tycho reactor."
+            echo
 
             mvn -B clean package -DskipTests
+
 
           else
 
             # ======================================================
-            # CHANGED
+            # CHANGED MODE
             # ======================================================
 
             if [[ ! -s build_order.txt ]]; then
 
               echo
-              echo "No impacted modules found."
+              echo "No impacted modules."
               echo "Nothing to build."
 
               exit 0
@@ -826,9 +1113,33 @@ jobs:
               echo "# MODULE: $module"
               echo "#########################################"
 
+
+              if [[ ! -d "$module" ]]; then
+
+                echo
+                echo "ERROR: Module directory does not exist:"
+                echo "  $module"
+
+                exit 1
+
+              fi
+
+
+              if [[ ! -f "$module/pom.xml" ]]; then
+
+                echo
+                echo "ERROR: pom.xml not found:"
+                echo "  $module/pom.xml"
+
+                exit 1
+
+              fi
+
+
               echo
               echo "Entering module:"
               echo "  $module"
+
 
               cd "$module"
 
@@ -839,26 +1150,19 @@ jobs:
 
 
               echo
-              echo "Module POM:"
-              if [[ -f "pom.xml" ]]; then
-                echo "  pom.xml found"
-              else
-                echo "ERROR: pom.xml not found."
-                exit 1
-              fi
-
-
-              echo
-              echo "Building module reactor:"
+              echo "Building module using its own Maven/Tycho reactor:"
               echo
               echo "  mvn -B clean package -DskipTests"
               echo
+
 
               mvn -B clean package -DskipTests
 
 
               echo
               echo "Artifacts generated by $module:"
+
+
               find . \
                 -type f \
                 -path "*/target/*" \
@@ -875,13 +1179,14 @@ jobs:
 
               build_number=$((build_number + 1))
 
+
             done < build_order.txt
 
           fi
 
 
       # ============================================================
-      # 10. SHOW ALL GENERATED ARTIFACTS
+      # 10. SHOW GENERATED ARTIFACTS
       # ============================================================
       - name: Show generated artifacts
         if: always()
@@ -893,6 +1198,7 @@ jobs:
           echo "========================================="
           echo "GENERATED ARTIFACTS"
           echo "========================================="
+
 
           find . \
             -type f \
@@ -919,9 +1225,11 @@ jobs:
           echo "FINAL BUILD SUMMARY"
           echo "========================================="
 
+
           echo
           echo "Build mode:"
           echo "  ${BUILD_MODE:-unknown}"
+
 
           echo
           echo "Changed modules:"
@@ -931,6 +1239,7 @@ jobs:
             echo "  None"
           fi
 
+
           echo
           echo "Impacted modules:"
           if [[ -s impacted_modules.txt ]]; then
@@ -939,22 +1248,31 @@ jobs:
             echo "  None"
           fi
 
+
           echo
-          echo "Build order:"
+          echo "Final build order:"
+
+
           if [[ -s build_order.txt ]]; then
 
             number=1
 
             while IFS= read -r module; do
+
               echo "  $number. $module"
+
               number=$((number + 1))
+
             done < build_order.txt
 
           else
+
             echo "  None"
+
           fi
+
 
           echo
           echo "========================================="
-          echo "BUILD COMPLETE"
+          echo "BUILD PROCESS FINISHED"
           echo "========================================="
