@@ -21,9 +21,6 @@ jobs:
     name: Build OSGi Project
     runs-on: self-hosted
 
-    env:
-      PROJECT_DIR: osgi-workshop
-
     steps:
 
       # ------------------------------------------------------------
@@ -48,7 +45,6 @@ jobs:
       # 3. Verify environment
       # ------------------------------------------------------------
       - name: Verify Java and Maven
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           echo "========================================="
           echo "JAVA"
@@ -65,7 +61,6 @@ jobs:
       # 4. Discover modules and dependency graph
       # ------------------------------------------------------------
       - name: Discover OSGi modules and dependency graph
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
@@ -418,7 +413,6 @@ jobs:
       # ------------------------------------------------------------
       - name: Detect changed modules
         id: changes
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
@@ -514,7 +508,6 @@ jobs:
       # 6. Resolve all downstream dependents
       # ------------------------------------------------------------
       - name: Resolve dependency chain
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
@@ -589,7 +582,6 @@ jobs:
       # 7. Calculate topological build order
       # ------------------------------------------------------------
       - name: Calculate build order
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
@@ -679,7 +671,6 @@ jobs:
       # 8. Display complete dependency graph
       # ------------------------------------------------------------
       - name: Display dependency graph and rebuild plan
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           echo
           echo "======================================================"
@@ -746,7 +737,6 @@ jobs:
       # 9. Clean selected products
       # ------------------------------------------------------------
       - name: Clean selected products
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
@@ -769,7 +759,6 @@ jobs:
       # 10. Build in dependency order
       # ------------------------------------------------------------
       - name: Build selected products in dependency order
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
@@ -812,7 +801,6 @@ jobs:
       # 11. Show generated JARs and other artifacts
       # ------------------------------------------------------------
       - name: Show generated artifacts
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           echo
           echo "========================================="
@@ -838,7 +826,6 @@ jobs:
       # 12. Final summary
       # ------------------------------------------------------------
       - name: Build summary
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           echo
           echo "======================================================"
