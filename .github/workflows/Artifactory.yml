@@ -979,6 +979,23 @@ jobs:
           JF_URL: ${{ secrets.JFROG_URL }}
           JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
 
+      - name: Configure JFrog
+        env:
+          JFROG_URL: ${{ secrets.JFROG_URL }}
+          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
+        run: |
+          set -e
+
+          echo "========================================="
+          echo "Configuring JFrog"
+          echo "========================================="
+
+          jf config add jfrog-server \
+            --url="$JFROG_URL" \
+            --access-token="$JF_ACCESS_TOKEN" \
+            --interactive=false \
+            --overwrite
+
       - name: Verify JFrog connection
         run: |
           set -e
@@ -988,7 +1005,7 @@ jobs:
           echo "========================================="
 
           jf --version
-          jf rt ping
+          jf rt ping --server-id=jfrog-server
 
       - name: Publish artifacts to JFrog
         run: |
@@ -1011,7 +1028,7 @@ jobs:
           jf rt upload \
             "**/target/*.jar" \
             "maven-osgi-local/" \
-            --flat=false
+            --server-id=jfrog-server
 
           echo "========================================="
           echo "JFrog upload completed"
