@@ -972,30 +972,47 @@ jobs:
           echo "========================================="
           echo "BUILD PROCESS FINISHED"
           echo "========================================="
-          
-      - name: Publish artifacts to JFrog
+
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
         env:
-          JFROG_URL: ${{ secrets.JFROG_URL }}
+          JF_URL: ${{ secrets.JFROG_URL }}
           JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
+
+      - name: Verify JFrog connection
         run: |
           set -e
-      
+
+          echo "========================================="
+          echo "JFrog CLI"
+          echo "========================================="
+
+          jf --version
+          jf rt ping
+
+      - name: Publish artifacts to JFrog
+        run: |
+          set -e
+
           echo "========================================="
           echo "Publishing artifacts to JFrog"
           echo "========================================="
-      
-          jf config add jfrog-server \
-            --url="$JFROG_URL" \
-            --access-token="$JF_ACCESS_TOKEN" \
-            --interactive=false \
-            --overwrite
-      
+
           echo "Artifacts found:"
           find . -type f \
             -path "*/target/*" \
             \( -name "*.jar" -o -name "*.zip" -o -name "*.war" \) \
             -print
-      
-          # Example:
-          # jf rt upload "*/target/*.jar" "<repo-path>/" \
-          #   --server-id=jfrog-server
+
+          echo "========================================="
+          echo "Uploading artifacts"
+          echo "========================================="
+
+          jf rt upload \
+            "**/target/*.jar" \
+            "maven-osgi-local/" \
+            --flat=false
+
+          echo "========================================="
+          echo "JFrog upload completed"
+          echo "========================================="
