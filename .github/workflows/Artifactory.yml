@@ -13,8 +13,8 @@ on:
         type: choice
         default: changed
         options:
-          - changed
           - all
+          - changed
 
 jobs:
   build:
@@ -32,7 +32,7 @@ jobs:
           fetch-depth: 0
 
       # ============================================================
-      # 2. JAVA 17 + MAVEN CACHE
+      # 2. JAVA 17
       # ============================================================
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -42,13 +42,11 @@ jobs:
           cache: maven
 
       # ============================================================
-      # 3. VERIFY ENVIRONMENT
+      # 3. VERIFY JAVA / MAVEN
       # ============================================================
       - name: Verify Java and Maven
         shell: bash
         run: |
-          set -euo pipefail
-
           echo "========================================="
           echo "JAVA"
           echo "========================================="
@@ -61,337 +59,341 @@ jobs:
           mvn -version
 
       # ============================================================
-      # 4. DISCOVER MAVEN MODULES + OSGi METADATA
+      # 4. DISCOVER PRODUCTS, TYCHO PROJECTS AND OSGi GRAPH
       # ============================================================
-      - name: Discover OSGi modules and dependency graph
+      - name: Discover Maven and OSGi metadata
         shell: bash
         run: |
           set -uo pipefail
 
           echo "========================================="
-          echo "DISCOVERING MAVEN MODULES"
+          echo "DISCOVERING MAVEN / OSGi METADATA"
           echo "========================================="
 
           rm -f \
-            /tmp/osgi_domains \
-            /tmp/osgi_edges \
-            /tmp/osgi_bundle_domains \
-            /tmp/osgi_exports \
-            /tmp/osgi_imports \
-            /tmp/osgi_requires
+            osgi_products.txt \
+            osgi_projects.txt \
+            osgi_bundle_projects.txt \
+            osgi_bundle_domains.txt \
+            osgi_exports.txt \
+            osgi_imports.txt \
+            osgi_requires.txt \
+            osgi_edges.txt
 
           touch \
-            /tmp/osgi_domains \
-            /tmp/osgi_edges \
-            /tmp/osgi_bundle_domains \
-            /tmp/osgi_exports \
-            /tmp/osgi_imports \
-            /tmp/osgi_requires
+            osgi_products.txt \
+            osgi_projects.txt \
+            osgi_bundle_projects.txt \
+            osgi_bundle_domains.txt \
+            osgi_exports.txt \
+            osgi_imports.txt \
+            osgi_requires.txt \
+            osgi_edges.txt
 
-          # ----------------------------------------------------------
-          # Discover top-level Maven modules.
-          # No module names are hard-coded.
-          # ----------------------------------------------------------
+          # --------------------------------------------------------
+          # Discover top-level product directories.
+          #
+          # A product is a top-level directory containing pom.xml.
+          # No product names are hard-coded.
+          # --------------------------------------------------------
+          echo
+          echo "Top-level Maven products:"
 
           for dir in */; do
             dir="${dir%/}"
 
             if [[ -f "$dir/pom.xml" ]]; then
-              echo "$dir" >> /tmp/osgi_domains
+              echo "$dir" >> osgi_products.txt
+              echo "  $dir"
             fi
           done
 
-          sort -u /tmp/osgi_domains -o /tmp/osgi_domains
+          sort -u osgi_products.txt -o osgi_products.txt
 
+          # --------------------------------------------------------
+          # Discover actual Maven/Tycho projects.
+          #
+          # A real OSGi bundle normally contains:
+          #
+          #   pom.xml
+          #   META-INF/MANIFEST.MF
+          #
+          # Product aggregator POMs do not normally contain a
+          # MANIFEST.MF, so they are not treated as JAR projects.
+          # --------------------------------------------------------
           echo
-          echo "Discovered modules:"
-          cat /tmp/osgi_domains
+          echo "Actual OSGi/Tycho projects:"
 
-          # ==========================================================
-          # DISCOVER OSGi BUNDLES
-          # ==========================================================
+          while IFS= read -r product; do
 
-          echo
-          echo "========================================="
-          echo "DISCOVERING OSGi BUNDLES"
-          echo "========================================="
+            [[ -n "$product" ]] || continue
 
-          while IFS= read -r domain; do
+            while IFS= read -r pom; do
 
-            while IFS= read -r manifest; do
+              project_dir="$(dirname "$pom")"
 
-              bundle="$(
-                awk '
-                  BEGIN { IGNORECASE = 1 }
+              manifest="$project_dir/META-INF/MANIFEST.MF"
 
-                  /^Bundle-SymbolicName:/ {
-                    value = $0
-                    sub(/^Bundle-SymbolicName:[[:space:]]*/, "", value)
-                    sub(/[[:space:]]*;.*/, "", value)
-                    gsub(/\r/, "", value)
-                    print value
-                    exit
-                  }
-                ' "$manifest"
-              )"
+              if [[ -f "$manifest" ]]; then
 
-              if [[ -n "$bundle" ]]; then
-                echo "$bundle|$domain" >> /tmp/osgi_bundle_domains
-                echo "$domain -> $bundle"
+                echo "$project_dir" >> osgi_projects.txt
+                echo "$project_dir" >> osgi_bundle_projects.txt
+
+                echo "  $project_dir"
+
+                bundle="$(
+                  awk '
+                    BEGIN {
+                      IGNORECASE = 1
+                    }
+
+                    /^Bundle-SymbolicName:/ {
+                      value = $0
+
+                      sub(/^Bundle-SymbolicName:[[:space:]]*/, "", value)
+                      sub(/[[:space:]]*;.*/, "", value)
+
+                      gsub(/\r/, "", value)
+
+                      print value
+                      exit
+                    }
+                  ' "$manifest"
+                )"
+
+                if [[ -n "$bundle" ]]; then
+
+                  echo "$bundle|$project_dir" \
+                    >> osgi_bundle_projects.txt
+
+                  echo "$bundle|$product|$project_dir" \
+                    >> osgi_bundle_domains.txt
+
+                  # ------------------------------------------------
+                  # Export-Package
+                  # ------------------------------------------------
+                  awk '
+                    BEGIN {
+                      IGNORECASE = 1
+                    }
+
+                    /^Export-Package:/ {
+                      line = $0
+                      sub(/^Export-Package:[[:space:]]*/, "", line)
+                      print line
+                    }
+
+                    /^[[:space:]]+/ && found {
+                      print
+                    }
+
+                    /^Import-Package:/ {
+                      found = 0
+                    }
+
+                    /^Require-Bundle:/ {
+                      found = 0
+                    }
+
+                    /^Export-Package:/ {
+                      found = 1
+                    }
+                  ' "$manifest" \
+                  | tr '\r\n' '  ' \
+                  | tr ',' '\n' \
+                  | sed 's/^[[:space:]]*//' \
+                  | sed 's/[[:space:]]*;.*$//' \
+                  | sed '/^$/d' \
+                  | while IFS= read -r package; do
+                      echo "$package|$bundle|$product" \
+                        >> osgi_exports.txt
+                    done
+
+                  # ------------------------------------------------
+                  # Import-Package
+                  # ------------------------------------------------
+                  awk '
+                    BEGIN {
+                      IGNORECASE = 1
+                    }
+
+                    /^Import-Package:/ {
+                      line = $0
+                      sub(/^Import-Package:[[:space:]]*/, "", line)
+                      print line
+                    }
+                  ' "$manifest" \
+                  | tr '\r\n' '  ' \
+                  | tr ',' '\n' \
+                  | sed 's/^[[:space:]]*//' \
+                  | sed 's/[[:space:]]*;.*$//' \
+                  | sed '/^$/d' \
+                  | while IFS= read -r package; do
+                      echo "$package|$bundle|$product" \
+                        >> osgi_imports.txt
+                    done
+
+                  # ------------------------------------------------
+                  # Require-Bundle
+                  # ------------------------------------------------
+                  awk '
+                    BEGIN {
+                      IGNORECASE = 1
+                    }
+
+                    /^Require-Bundle:/ {
+                      line = $0
+                      sub(/^Require-Bundle:[[:space:]]*/, "", line)
+                      print line
+                    }
+                  ' "$manifest" \
+                  | tr '\r\n' '  ' \
+                  | tr ',' '\n' \
+                  | sed 's/^[[:space:]]*//' \
+                  | sed 's/[[:space:]]*;.*$//' \
+                  | sed '/^$/d' \
+                  | while IFS= read -r required; do
+                      echo "$required|$bundle|$product" \
+                        >> osgi_requires.txt
+                    done
+
+                fi
               fi
 
             done < <(
-              find "$domain" \
+              find "$product" \
                 -type f \
-                -path '*/META-INF/MANIFEST.MF' \
+                -name "pom.xml" \
                 2>/dev/null
             )
 
-          done < /tmp/osgi_domains
+          done < osgi_products.txt
 
-          sort -u /tmp/osgi_bundle_domains \
-            -o /tmp/osgi_bundle_domains
+          sort -u osgi_projects.txt -o osgi_projects.txt
+          sort -u osgi_bundle_domains.txt -o osgi_bundle_domains.txt
+          sort -u osgi_exports.txt -o osgi_exports.txt
+          sort -u osgi_imports.txt -o osgi_imports.txt
+          sort -u osgi_requires.txt -o osgi_requires.txt
 
-          # ==========================================================
-          # DISCOVER EXPORT-PACKAGE
-          # ==========================================================
-
-          echo
-          echo "========================================="
-          echo "DISCOVERING EXPORTED PACKAGES"
-          echo "========================================="
-
-          while IFS='|' read -r bundle domain; do
-
-            while IFS= read -r manifest; do
-
-              awk '
-                BEGIN { IGNORECASE = 1 }
-
-                /^Export-Package:/ {
-                  line = $0
-                  sub(/^Export-Package:[[:space:]]*/, "", line)
-                  print line
-                }
-              ' "$manifest" 2>/dev/null |
-              tr '\r\n' '  ' |
-              tr ',' '\n' |
-              sed 's/[[:space:]].*//' |
-              sed '/^$/d' |
-              while IFS= read -r package; do
-                echo "$package|$bundle|$domain" >> /tmp/osgi_exports
-              done
-
-            done < <(
-              find "$domain" \
-                -type f \
-                -path '*/META-INF/MANIFEST.MF' \
-                2>/dev/null
-            )
-
-          done < /tmp/osgi_bundle_domains
-
-          # ==========================================================
-          # DISCOVER IMPORT-PACKAGE
-          # ==========================================================
-
-          echo
-          echo "========================================="
-          echo "DISCOVERING IMPORTED PACKAGES"
-          echo "========================================="
-
-          while IFS='|' read -r bundle domain; do
-
-            while IFS= read -r manifest; do
-
-              awk '
-                BEGIN { IGNORECASE = 1 }
-
-                /^Import-Package:/ {
-                  line = $0
-                  sub(/^Import-Package:[[:space:]]*/, "", line)
-                  print line
-                }
-              ' "$manifest" 2>/dev/null |
-              tr '\r\n' '  ' |
-              tr ',' '\n' |
-              sed 's/[[:space:]].*//' |
-              sed '/^$/d' |
-              while IFS= read -r package; do
-                echo "$package|$bundle|$domain" >> /tmp/osgi_imports
-              done
-
-            done < <(
-              find "$domain" \
-                -type f \
-                -path '*/META-INF/MANIFEST.MF' \
-                2>/dev/null
-            )
-
-          done < /tmp/osgi_bundle_domains
-
-          # ==========================================================
-          # DISCOVER REQUIRE-BUNDLE
-          # ==========================================================
-
-          echo
-          echo "========================================="
-          echo "DISCOVERING REQUIRED BUNDLES"
-          echo "========================================="
-
-          while IFS='|' read -r bundle domain; do
-
-            while IFS= read -r manifest; do
-
-              awk '
-                BEGIN { IGNORECASE = 1 }
-
-                /^Require-Bundle:/ {
-                  line = $0
-                  sub(/^Require-Bundle:[[:space:]]*/, "", line)
-                  print line
-                }
-              ' "$manifest" 2>/dev/null |
-              tr '\r\n' '  ' |
-              tr ',' '\n' |
-              sed 's/[[:space:]].*//' |
-              sed '/^$/d' |
-              while IFS= read -r required; do
-                echo "$required|$bundle|$domain" >> /tmp/osgi_requires
-              done
-
-            done < <(
-              find "$domain" \
-                -type f \
-                -path '*/META-INF/MANIFEST.MF' \
-                2>/dev/null
-            )
-
-          done < /tmp/osgi_bundle_domains
-
-          # ==========================================================
-          # PACKAGE DEPENDENCY GRAPH
+          # --------------------------------------------------------
+          # Build package dependency edges.
+          #
+          # Direction:
           #
           # provider -> consumer
-          # ==========================================================
-
+          #
+          # Example:
+          #
+          # catalog -> orders
+          # --------------------------------------------------------
           echo
           echo "========================================="
-          echo "BUILDING PACKAGE DEPENDENCY GRAPH"
+          echo "BUILDING OSGi DEPENDENCY GRAPH"
           echo "========================================="
 
-          while IFS='|' read -r package consumer consumer_domain; do
+          # Import-Package dependencies
+          while IFS='|' read -r package consumer_bundle consumer_product; do
 
             [[ -n "$package" ]] || continue
 
-            while IFS='|' read -r exported provider provider_domain; do
+            while IFS='|' read -r exported provider_bundle provider_product; do
 
-              [[ "$exported" == "$package" ]] || continue
-              [[ "$provider_domain" == "$consumer_domain" ]] && continue
+              [[ "$package" == "$exported" ]] || continue
 
-              echo "$provider_domain|$consumer_domain|package:$package" \
-                >> /tmp/osgi_edges
+              [[ "$provider_bundle" == "$consumer_bundle" ]] && continue
 
-            done < /tmp/osgi_exports
+              echo "$provider_product|$consumer_product|package:$package" \
+                >> osgi_edges.txt
 
-          done < /tmp/osgi_imports
+            done < osgi_exports.txt
 
-          # ==========================================================
-          # REQUIRE-BUNDLE GRAPH
-          # ==========================================================
+          done < osgi_imports.txt
 
-          while IFS='|' read -r required consumer consumer_domain; do
+          # Require-Bundle dependencies
+          while IFS='|' read -r required consumer_bundle consumer_product; do
 
             [[ -n "$required" ]] || continue
 
-            while IFS='|' read -r provider provider_domain; do
+            while IFS='|' read -r provider_bundle provider_product provider_project; do
 
-              [[ "$provider" == "$required" ]] || continue
-              [[ "$provider_domain" == "$consumer_domain" ]] && continue
+              [[ "$required" == "$provider_bundle" ]] || continue
 
-              echo "$provider_domain|$consumer_domain|bundle:$required" \
-                >> /tmp/osgi_edges
+              [[ "$provider_bundle" == "$consumer_bundle" ]] && continue
 
-            done < /tmp/osgi_bundle_domains
+              echo "$provider_product|$consumer_product|bundle:$required" \
+                >> osgi_edges.txt
 
-          done < /tmp/osgi_requires
+            done < osgi_bundle_domains.txt
 
-          # Remove self dependencies and duplicates.
-          awk -F'|' '
-            $1 != $2 && $1 != "" && $2 != ""
-          ' /tmp/osgi_edges |
-          sort -u > /tmp/osgi_edges.clean
+          done < osgi_requires.txt
 
-          mv /tmp/osgi_edges.clean /tmp/osgi_edges
+          sort -u osgi_edges.txt -o osgi_edges.txt
 
-          # ==========================================================
-          # SAVE DISCOVERY DATA
-          # ==========================================================
+          # --------------------------------------------------------
+          # Display discovered metadata
+          # --------------------------------------------------------
+          echo
+          echo "========================================="
+          echo "DISCOVERED PRODUCTS"
+          echo "========================================="
+          cat osgi_products.txt
 
-          cp /tmp/osgi_domains ./osgi_domains.txt
-          cp /tmp/osgi_edges ./osgi_edges.txt
-          cp /tmp/osgi_bundle_domains ./osgi_bundle_domains.txt
-          cp /tmp/osgi_exports ./osgi_exports.txt
-          cp /tmp/osgi_imports ./osgi_imports.txt
-          cp /tmp/osgi_requires ./osgi_requires.txt
-
-          # ==========================================================
-          # DISPLAY GRAPH
-          # ==========================================================
+          echo
+          echo "========================================="
+          echo "DISCOVERED OSGi PROJECTS"
+          echo "========================================="
+          cat osgi_projects.txt
 
           echo
           echo "========================================="
           echo "OSGi DEPENDENCY GRAPH"
           echo "========================================="
 
-          if [[ -s /tmp/osgi_edges ]]; then
-
+          if [[ -s osgi_edges.txt ]]; then
             while IFS='|' read -r provider consumer reason; do
               echo "$provider -> $consumer [$reason]"
-            done < /tmp/osgi_edges
-
+            done < osgi_edges.txt
           else
-            echo "No cross-module OSGi dependencies discovered."
+            echo "No OSGi dependencies discovered."
           fi
 
       # ============================================================
-      # 5. DETECT CHANGED MODULES
+      # 5. DETECT CHANGED PRODUCTS
       # ============================================================
       - name: Detect changed products
+        id: changes
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
           echo "========================================="
-          echo "DETECTING CHANGED MODULES"
+          echo "DETECTING BUILD SCENARIO"
           echo "========================================="
 
-          MODE="${{ inputs.build_mode }}"
-
-          if [[ -z "$MODE" ]]; then
-            MODE="changed"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            BUILD_MODE="${{ inputs.build_mode }}"
+          else
+            BUILD_MODE="changed"
           fi
 
-          echo "Build mode: $MODE"
+          echo "Build mode: $BUILD_MODE"
 
-          echo "BUILD_MODE=$MODE" >> "$GITHUB_ENV"
+          echo "BUILD_MODE=$BUILD_MODE" >> "$GITHUB_ENV"
 
-          rm -f changed_domains.txt
-          touch changed_domains.txt
+          rm -f changed_products.txt
+          touch changed_products.txt
 
-          # ==========================================================
-          # ALL
-          # ==========================================================
+          if [[ "$BUILD_MODE" == "all" ]]; then
 
-          if [[ "$MODE" == "all" ]]; then
+            echo
+            echo "Scenario: ALL"
 
-            cp osgi_domains.txt changed_domains.txt
+            cp osgi_products.txt changed_products.txt
 
           else
 
-            # ========================================================
-            # DETERMINE BASE COMMIT
-            # ========================================================
+            echo
+            echo "Scenario: CHANGED"
 
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
 
@@ -399,92 +401,59 @@ jobs:
 
             else
 
-              if git rev-parse HEAD~1 >/dev/null 2>&1; then
-                BASE_SHA="$(git rev-parse HEAD~1)"
-              else
-                BASE_SHA=""
-              fi
+              BASE_SHA="HEAD~1"
 
             fi
 
-            echo "Base SHA: ${BASE_SHA:-none}"
+            echo "Comparing against: $BASE_SHA"
 
-            # ========================================================
-            # NO BASE COMMIT
-            # ========================================================
+            git diff --name-only "$BASE_SHA" HEAD > changed_files.txt
 
-            if [[ -z "$BASE_SHA" ]]; then
+            echo
+            echo "Changed files:"
+            cat changed_files.txt || true
 
-              cp osgi_domains.txt changed_domains.txt
+            # ------------------------------------------------------
+            # If root pom changes, rebuild everything.
+            # ------------------------------------------------------
+            if grep -qx "pom.xml" changed_files.txt 2>/dev/null; then
+
+              echo
+              echo "Root pom.xml changed."
+              echo "Selecting all products."
+
+              cp osgi_products.txt changed_products.txt
 
             else
 
-              CHANGED_FILES="$(
-                git diff --name-only "$BASE_SHA" HEAD
-              )"
-
-              echo
-              echo "Changed files:"
-              echo "$CHANGED_FILES"
-
-              # ======================================================
-              # ROOT POM CHANGED
-              # ======================================================
-
-              ROOT_CHANGED=0
-
+              # ----------------------------------------------------
+              # Map changed file to top-level product.
+              # ----------------------------------------------------
               while IFS= read -r file; do
 
-                case "$file" in
-                  pom.xml|.mvn/extensions.xml|.mvn/maven.config)
-                    ROOT_CHANGED=1
-                    ;;
-                esac
+                [[ -n "$file" ]] || continue
 
-              done <<< "$CHANGED_FILES"
+                first_dir="${file%%/*}"
 
-              if [[ "$ROOT_CHANGED" -eq 1 ]]; then
+                if grep -Fxq "$first_dir" osgi_products.txt; then
+                  echo "$first_dir" >> changed_products.txt
+                fi
 
-                echo
-                echo "Root Maven configuration changed."
-                echo "Selecting all modules."
-
-                cp osgi_domains.txt changed_domains.txt
-
-              else
-
-                # ====================================================
-                # MAP CHANGED FILE TO DISCOVERED MODULE
-                # ====================================================
-
-                while IFS= read -r file; do
-
-                  [[ -n "$file" ]] || continue
-
-                  domain="${file%%/*}"
-
-                  if grep -Fxq "$domain" osgi_domains.txt; then
-                    echo "$domain" >> changed_domains.txt
-                  fi
-
-                done <<< "$CHANGED_FILES"
-
-                sort -u changed_domains.txt \
-                  -o changed_domains.txt
-
-              fi
+              done < changed_files.txt
 
             fi
+
+            sort -u changed_products.txt -o changed_products.txt
 
           fi
 
           echo
           echo "========================================="
-          echo "DIRECTLY CHANGED MODULES"
+          echo "DIRECTLY CHANGED PRODUCTS"
           echo "========================================="
 
-          if [[ -s changed_domains.txt ]]; then
-            cat changed_domains.txt
+          if [[ -s changed_products.txt ]]; then
+            cat changed_products.txt
           else
             echo "No product modules changed."
           fi
@@ -492,32 +461,16 @@ jobs:
       # ============================================================
       # 6. RESOLVE DOWNSTREAM DEPENDENTS
       # ============================================================
-      - name: Resolve dependency closure
+      - name: Resolve impacted products
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
           echo "========================================="
-          echo "RESOLVING DEPENDENCIES AND DEPENDENTS"
+          echo "RESOLVING IMPACTED PRODUCTS"
           echo "========================================="
 
-          rm -f selected_domains.txt
-          touch selected_domains.txt
-
-          cat changed_domains.txt >> selected_domains.txt
-
-          sort -u selected_domains.txt \
-            -o selected_domains.txt
-
-          # ----------------------------------------------------------
-          # Graph direction:
-          #
-          # provider -> consumer
-          #
-          # If provider is selected, consumer must also be selected.
-          #
-          # Repeat until no new modules are found.
-          # ----------------------------------------------------------
+          cp changed_products.txt impacted_products.txt
 
           changed=1
 
@@ -528,56 +481,51 @@ jobs:
             while IFS='|' read -r provider consumer reason; do
 
               [[ -n "$provider" ]] || continue
-              [[ -n "$consumer" ]] || continue
 
-              if grep -Fxq "$provider" selected_domains.txt &&
-                 ! grep -Fxq "$consumer" selected_domains.txt
-              then
+              if grep -Fxq "$provider" impacted_products.txt \
+                && ! grep -Fxq "$consumer" impacted_products.txt; then
 
-                echo "Adding dependent: $provider -> $consumer"
-
-                echo "$consumer" >> selected_domains.txt
-
-                sort -u selected_domains.txt \
-                  -o selected_domains.txt
+                echo "$consumer" >> impacted_products.txt
 
                 changed=1
+
+                echo "Impact detected:"
+                echo "  $provider -> $consumer"
 
               fi
 
             done < osgi_edges.txt
 
+            sort -u impacted_products.txt -o impacted_products.txt
+
           done
 
           echo
           echo "========================================="
-          echo "FINAL SELECTED MODULES"
+          echo "ALL IMPACTED PRODUCTS"
           echo "========================================="
 
-          cat selected_domains.txt
+          cat impacted_products.txt
 
       # ============================================================
-      # 7. CALCULATE TOPOLOGICAL BUILD ORDER
+      # 7. CALCULATE PRODUCT BUILD ORDER
       # ============================================================
-      - name: Calculate build order
+      - name: Calculate dependency build order
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
           echo "========================================="
           echo "CALCULATING BUILD ORDER"
           echo "========================================="
 
           rm -f build_order.txt
-          rm -f done_domains.txt
-
           touch build_order.txt
-          touch done_domains.txt
 
-          total="$(wc -l < selected_domains.txt | tr -d ' ')"
-          count=0
+          remaining="remaining_products.txt"
+          cp impacted_products.txt "$remaining"
 
-          while [[ "$count" -lt "$total" ]]; do
+          while [[ -s "$remaining" ]]; do
 
             progress=0
 
@@ -585,26 +533,17 @@ jobs:
 
               [[ -n "$candidate" ]] || continue
 
-              if grep -Fxq "$candidate" done_domains.txt; then
-                continue
-              fi
-
               ready=1
-
-              # ------------------------------------------------------
-              # Every provider of candidate must already be built.
-              # ------------------------------------------------------
 
               while IFS='|' read -r provider consumer reason; do
 
-                [[ "$consumer" == "$candidate" ]] || continue
+                [[ -n "$provider" ]] || continue
 
-                if grep -Fxq "$provider" selected_domains.txt; then
+                if [[ "$consumer" == "$candidate" ]] \
+                  && grep -Fxq "$provider" "$remaining"; then
 
-                  if ! grep -Fxq "$provider" done_domains.txt; then
-                    ready=0
-                    break
-                  fi
+                  ready=0
+                  break
 
                 fi
 
@@ -613,148 +552,204 @@ jobs:
               if [[ "$ready" -eq 1 ]]; then
 
                 echo "$candidate" >> build_order.txt
-                echo "$candidate" >> done_domains.txt
 
-                count=$((count + 1))
+                grep -Fxv "$candidate" "$remaining" \
+                  > "${remaining}.tmp" || true
+
+                mv "${remaining}.tmp" "$remaining"
+
                 progress=1
+
+                break
 
               fi
 
-            done < selected_domains.txt
-
-            # --------------------------------------------------------
-            # Protect against cycles/unresolved dependencies.
-            # --------------------------------------------------------
+            done < "$remaining"
 
             if [[ "$progress" -eq 0 ]]; then
 
               echo
-              echo "ERROR: Unable to calculate complete build order."
+              echo "ERROR: Dependency cycle or unresolved dependency detected."
               echo
-              echo "Possible circular or unresolved dependency."
-              echo
-              echo "Remaining modules:"
-
-              while IFS= read -r candidate; do
-
-                if ! grep -Fxq "$candidate" done_domains.txt; then
-                  echo "  $candidate"
-                fi
-
-              done < selected_domains.txt
-
-              echo
-              echo "Dependency graph:"
-              cat osgi_edges.txt
+              echo "Remaining products:"
+              cat "$remaining"
 
               exit 1
+
             fi
 
           done
 
           echo
           echo "========================================="
-          echo "FINAL BUILD ORDER"
+          echo "FINAL PRODUCT BUILD ORDER"
           echo "========================================="
 
-          nl -ba build_order.txt
+          n=1
+
+          while IFS= read -r product; do
+            echo "$n. $product"
+            n=$((n + 1))
+          done < build_order.txt
 
       # ============================================================
-      # 8. DISPLAY SMART BUILD PLAN
+      # 8. DISCOVER ACTUAL TYCHO PROJECTS TO BUILD
       # ============================================================
-      - name: Display build plan
+      - name: Resolve actual Tycho projects
         shell: bash
         run: |
+          set -euo pipefail
+
           echo "========================================="
-          echo "OSGi SMART BUILD PLAN"
+          echo "RESOLVING ACTUAL TYCHO PROJECTS"
           echo "========================================="
 
+          rm -f selected_projects.txt
+          touch selected_projects.txt
+
+          while IFS= read -r product; do
+
+            [[ -n "$product" ]] || continue
+
+            echo
+            echo "Product: $product"
+
+            while IFS= read -r project; do
+
+              if [[ -f "$project/pom.xml" ]] \
+                && [[ -f "$project/META-INF/MANIFEST.MF" ]]; then
+
+                echo "$project" >> selected_projects.txt
+
+                echo "  Tycho project: $project"
+
+              fi
+
+            done < osgi_projects.txt
+
+          done < build_order.txt
+
+          sort -u selected_projects.txt -o selected_projects.txt
+
           echo
-          echo "Build mode:"
+          echo "========================================="
+          echo "SELECTED TYCHO PROJECTS"
+          echo "========================================="
+
+          if [[ -s selected_projects.txt ]]; then
+            cat selected_projects.txt
+          else
+            echo "No Tycho projects selected."
+          fi
+
+      # ============================================================
+      # 9. SHOW COMPLETE BUILD PLAN
+      # ============================================================
+      - name: Show build plan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo
+          echo "============================================================"
+          echo "OSGi SMART BUILD PLAN"
+          echo "============================================================"
+
+          echo
+          echo "BUILD MODE:"
           echo "$BUILD_MODE"
 
           echo
-          echo "Directly changed modules:"
-          if [[ -s changed_domains.txt ]]; then
-            cat changed_domains.txt
-          else
-            echo "None"
-          fi
+          echo "DIRECTLY CHANGED:"
+          cat changed_products.txt || true
 
           echo
-          echo "Selected modules:"
-          cat selected_domains.txt
+          echo "IMPACTED PRODUCTS:"
+          cat impacted_products.txt || true
 
           echo
-          echo "Build order:"
-          nl -ba build_order.txt
+          echo "PRODUCT BUILD ORDER:"
+          cat build_order.txt || true
 
           echo
-          echo "========================================="
-          echo "DEPENDENCY GRAPH"
-          echo "========================================="
+          echo "ACTUAL TYCHO PROJECTS:"
+          cat selected_projects.txt || true
 
-          if [[ -s osgi_edges.txt ]]; then
-            cat osgi_edges.txt
-          else
-            echo "No cross-module dependencies."
-          fi
+          echo
+          echo "============================================================"
 
       # ============================================================
-      # 9. CLEAN SELECTED MODULES
+      # 10. BUILD
+      #
+      # ALL:
+      #   Build complete Maven/Tycho reactor.
+      #
+      # CHANGED:
+      #   Build only the actual selected Tycho projects.
+      #
+      # IMPORTANT:
+      #   We do NOT use:
+      #
+      #       -pl reporting
+      #
+      #   because reporting may be an aggregator POM.
+      #
+      #   Instead we dynamically pass the actual Tycho projects.
       # ============================================================
-      - name: Clean selected modules
+      - name: Build OSGi project
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================="
-          echo "CLEANING SELECTED MODULES"
+          echo "BUILDING OSGi PROJECT"
           echo "========================================="
 
-          while IFS= read -r module; do
-
-            [[ -n "$module" ]] || continue
+          if [[ "$BUILD_MODE" == "all" ]]; then
 
             echo
-            echo "Cleaning: $module"
+            echo "Scenario: ALL"
+            echo "Building complete Maven/Tycho reactor."
 
-            mvn -B \
-              -pl "$module" \
-              clean
+            mvn -B clean package -DskipTests
 
-          done < build_order.txt
-
-      # ============================================================
-      # 10. BUILD SELECTED MODULES
-      # ============================================================
-      - name: Build selected modules
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================="
-          echo "BUILDING SELECTED MODULES"
-          echo "========================================="
-
-          while IFS= read -r module; do
-
-            [[ -n "$module" ]] || continue
+          else
 
             echo
-            echo "========================================="
-            echo "BUILDING MODULE: $module"
-            echo "========================================="
+            echo "Scenario: CHANGED"
+            echo "Building selected Tycho projects only."
+
+            if [[ ! -s selected_projects.txt ]]; then
+
+              echo "No impacted Tycho projects found."
+              echo "Nothing to build."
+
+              exit 0
+
+            fi
+
+            # Maven -pl accepts comma-separated reactor project paths.
+            PROJECT_LIST="$(
+              paste -sd, selected_projects.txt
+            )"
+
+            echo
+            echo "Maven reactor projects:"
+            echo "$PROJECT_LIST"
+
+            echo
+            echo "Running Maven package..."
 
             mvn -B \
-              -pl "$module" \
-              package \
+              clean package \
+              -pl "$PROJECT_LIST" \
+              -am \
               -DskipTests
 
-          done < build_order.txt
+          fi
 
       # ============================================================
-      # 11. SHOW GENERATED ARTIFACTS
+      # 11. SHOW GENERATED JAR / ZIP / WAR ARTIFACTS
       # ============================================================
       - name: Show generated artifacts
         shell: bash
@@ -763,29 +758,32 @@ jobs:
           echo "GENERATED ARTIFACTS"
           echo "========================================="
 
-          while IFS= read -r module; do
-
-            [[ -n "$module" ]] || continue
-
-            echo
-            echo "Artifacts for: $module"
-
-            find "$module" \
-              -path "*/target/*" \
-              -type f \
-              \( \
-                -name "*.jar" \
-                -o -name "*.zip" \
-                -o -name "*.war" \
-              \) \
-              -print
-
-          done < build_order.txt
+          find . \
+            -type f \
+            -path "*/target/*" \
+            \( \
+              -name "*.jar" \
+              -o -name "*.zip" \
+              -o -name "*.war" \
+            \) \
+            -print
 
       # ============================================================
       # 12. SETUP JFROG CLI
+      #
+      # Required GitHub configuration:
+      #
+      # Repository variable:
+      #   JF_URL
+      #
+      # Repository secret:
+      #   JF_ACCESS_TOKEN
+      #
+      # This step does not affect Maven dependency resolution.
+      # GitHub Actions Maven cache continues to be used.
       # ============================================================
       - name: Setup JFrog CLI
+        if: success() && env.JF_URL != ''
         uses: jfrog/setup-jfrog-cli@v4
         env:
           JF_URL: ${{ vars.JF_URL }}
@@ -795,6 +793,7 @@ jobs:
       # 13. CONFIGURE JFROG
       # ============================================================
       - name: Configure JFrog
+        if: success() && vars.JF_URL != '' && secrets.JF_ACCESS_TOKEN != ''
         shell: bash
         env:
           JF_URL: ${{ vars.JF_URL }}
@@ -802,86 +801,57 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "========================================="
-          echo "CONFIGURING JFROG"
-          echo "========================================="
-
           jf c add artifactory \
             --url="$JF_URL" \
             --access-token="$JF_ACCESS_TOKEN" \
             --interactive=false
 
-          jf c show artifactory
+          echo "JFrog configured successfully."
 
       # ============================================================
-      # 14. PUBLISH MAVEN ARTIFACTS TO JFROG
+      # 14. PUBLISH JARs TO JFROG
+      #
+      # Uses package output.
+      #
+      # No Maven install is performed.
       # ============================================================
-      - name: Publish artifacts to JFrog
+      - name: Publish JARs to JFrog
+        if: success() && vars.JF_URL != '' && secrets.JF_ACCESS_TOKEN != ''
         shell: bash
-        env:
-          JF_URL: ${{ vars.JF_URL }}
         run: |
           set -euo pipefail
 
           echo "========================================="
-          echo "PUBLISHING ARTIFACTS TO JFROG"
+          echo "PUBLISHING JARs TO JFROG"
           echo "========================================="
 
-          # ----------------------------------------------------------
-          # Select repository based on Maven version.
-          #
-          # SNAPSHOT versions:
-          #   osgi-snapshot-local
-          #
-          # Release versions:
-          #   osgi-local
-          # ----------------------------------------------------------
+          JF_REPO="${{ vars.JF_REPO }}"
 
-          VERSION="$(
-            mvn -q \
-              -DforceStdout \
-              help:evaluate \
-              -Dexpression=project.version
-          )"
-
-          echo "Project version: $VERSION"
-
-          if [[ "$VERSION" == *"-SNAPSHOT" ]]; then
-            DEPLOY_REPO="osgi-snapshot-local"
-          else
-            DEPLOY_REPO="osgi-local"
+          if [[ -z "$JF_REPO" ]]; then
+            JF_REPO="osgi-local"
           fi
 
-          echo "Deploy repository: $DEPLOY_REPO"
+          echo "JFrog repository: $JF_REPO"
 
-          # ----------------------------------------------------------
-          # Deploy Maven artifacts.
-          #
-          # This uses the standard Maven repository layout.
-          # ----------------------------------------------------------
+          find . \
+            -type f \
+            -path "*/target/*" \
+            -name "*.jar" \
+            -print
 
           jf rt upload \
             "**/target/*.jar" \
-            "$DEPLOY_REPO/" \
+            "$JF_REPO/" \
             --server-id=artifactory \
             --flat=false \
             --build-name=osgi-smart-build \
             --build-number="${{ github.run_number }}"
 
-          # Upload ZIP artifacts if present.
-          jf rt upload \
-            "**/target/*.zip" \
-            "$DEPLOY_REPO/" \
-            --server-id=artifactory \
-            --flat=false \
-            --build-name=osgi-smart-build \
-            --build-number="${{ github.run_number }}" \
-            --fail-no-op=false
-
       # ============================================================
-      # 15. COLLECT AND PUBLISH JFROG BUILD INFO
+      # 15. PUBLISH BUILD INFO
       # ============================================================
       - name: Publish JFrog Build Info
+        if: success() && vars.JF_URL != '' && secrets.JF_ACCESS_TOKEN != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -898,43 +868,42 @@ jobs:
       # ============================================================
       # 16. FINAL SUMMARY
       # ============================================================
-      - name: Build summary
+      - name: Final summary
         if: always()
         shell: bash
         run: |
-          echo "========================================="
-          echo "OSGi BUILD SUMMARY"
-          echo "========================================="
+          echo
+          echo "============================================================"
+          echo "OSGi SMART BUILD SUMMARY"
+          echo "============================================================"
 
           echo
           echo "Build mode:"
           echo "${BUILD_MODE:-unknown}"
 
           echo
-          echo "Directly changed modules:"
-          if [[ -f changed_domains.txt ]]; then
-            cat changed_domains.txt
-          else
-            echo "None"
-          fi
+          echo "Changed products:"
+          cat changed_products.txt 2>/dev/null || true
 
           echo
-          echo "Selected modules:"
-          if [[ -f selected_domains.txt ]]; then
-            cat selected_domains.txt
-          else
-            echo "None"
-          fi
+          echo "Impacted products:"
+          cat impacted_products.txt 2>/dev/null || true
 
           echo
           echo "Build order:"
-          if [[ -f build_order.txt ]]; then
-            nl -ba build_order.txt
-          else
-            echo "None"
-          fi
+          cat build_order.txt 2>/dev/null || true
 
           echo
-          echo "========================================="
-          echo "OSGi BUILD FINISHED"
-          echo "========================================="
+          echo "Generated artifacts:"
+          find . \
+            -type f \
+            -path "*/target/*" \
+            \( \
+              -name "*.jar" \
+              -o -name "*.zip" \
+              -o -name "*.war" \
+            \) \
+            -print 2>/dev/null || true
+
+          echo
+          echo "============================================================"
