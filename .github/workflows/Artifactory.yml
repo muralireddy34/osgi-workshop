@@ -1033,3 +1033,15 @@ jobs:
           echo "========================================="
           echo "JFrog upload completed"
           echo "========================================="
+
+      - name: Verify uploaded artifacts
+        run: |
+          set -e
+
+          echo "========================================="
+          echo "Verifying artifacts in JFrog"
+          echo "========================================="
+
+          jf rt search \
+            "maven-osgi-local/**/*.jar" \
+            --server-id=jfrog-server
