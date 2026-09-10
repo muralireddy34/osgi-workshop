@@ -748,7 +748,7 @@ jobs:
 
             mvn -B \
               -pl "$module" \
-              install \
+              package \
               -DskipTests
 
           done < build_order.txt
