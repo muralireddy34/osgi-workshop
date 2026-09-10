@@ -13,8 +13,8 @@ on:
         type: choice
         default: changed
         options:
-          - all
           - changed
+          - all
 
 jobs:
   build:
@@ -24,7 +24,7 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. Checkout complete history
+      # 1. CHECKOUT
       # ============================================================
       - name: Checkout source
         uses: actions/checkout@v4
@@ -32,7 +32,7 @@ jobs:
           fetch-depth: 0
 
       # ============================================================
-      # 2. Java 17
+      # 2. JAVA 17
       # ============================================================
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -42,13 +42,11 @@ jobs:
           cache: maven
 
       # ============================================================
-      # 3. Verify environment
+      # 3. VERIFY ENVIRONMENT
       # ============================================================
       - name: Verify Java and Maven
         shell: bash
         run: |
-          set -e
-
           echo "========================================="
           echo "JAVA"
           echo "========================================="
@@ -61,37 +59,35 @@ jobs:
           mvn -version
 
       # ============================================================
-      # 4. Discover OSGi modules and dependency graph
+      # 4. DISCOVER MODULES AND OSGi DEPENDENCY GRAPH
       # ============================================================
       - name: Discover OSGi modules and dependency graph
         shell: bash
         run: |
           set -uo pipefail
 
-          echo
           echo "========================================="
-          echo "DISCOVERING OSGi MODULES"
+          echo "DISCOVERING MAVEN MODULES"
           echo "========================================="
 
-          rm -f /tmp/osgi_domains
-          rm -f /tmp/osgi_edges
-          rm -f /tmp/osgi_bundle_domains
-          rm -f /tmp/osgi_exports
-          rm -f /tmp/osgi_imports
-          rm -f /tmp/osgi_requires
-          rm -f /tmp/feature_domains
+          rm -f \
+            /tmp/osgi_domains \
+            /tmp/osgi_edges \
+            /tmp/osgi_bundle_domains \
+            /tmp/osgi_exports \
+            /tmp/osgi_imports \
+            /tmp/osgi_requires
 
-          touch /tmp/osgi_domains
-          touch /tmp/osgi_edges
-          touch /tmp/osgi_bundle_domains
-          touch /tmp/osgi_exports
-          touch /tmp/osgi_imports
-          touch /tmp/osgi_requires
-          touch /tmp/feature_domains
+          touch \
+            /tmp/osgi_domains \
+            /tmp/osgi_edges \
+            /tmp/osgi_bundle_domains \
+            /tmp/osgi_exports \
+            /tmp/osgi_imports \
+            /tmp/osgi_requires
 
           # ----------------------------------------------------------
           # Discover top-level Maven product/module directories.
-          #
           # No product names are hard-coded.
           # ----------------------------------------------------------
 
@@ -107,18 +103,10 @@ jobs:
 
           echo
           echo "Discovered product modules:"
-
-          if [[ -s /tmp/osgi_domains ]]; then
-            cat /tmp/osgi_domains
-          else
-            echo "ERROR: No top-level Maven modules discovered."
-            exit 1
-          fi
+          cat /tmp/osgi_domains
 
           # ----------------------------------------------------------
-          # Discover OSGi bundles.
-          #
-          # Bundle-SymbolicName -> product module
+          # Discover OSGi bundles from MANIFEST.MF
           # ----------------------------------------------------------
 
           echo
@@ -130,13 +118,9 @@ jobs:
 
             while IFS= read -r manifest; do
 
-              [[ -f "$manifest" ]] || continue
-
               bundle="$(
                 awk '
-                  BEGIN {
-                    IGNORECASE = 1
-                  }
+                  BEGIN { IGNORECASE = 1 }
 
                   /^Bundle-SymbolicName:/ {
                     value = $0
@@ -163,10 +147,11 @@ jobs:
 
           done < /tmp/osgi_domains
 
-          sort -u /tmp/osgi_bundle_domains -o /tmp/osgi_bundle_domains
+          sort -u /tmp/osgi_bundle_domains \
+            -o /tmp/osgi_bundle_domains
 
           # ----------------------------------------------------------
-          # Discover exported packages.
+          # Discover Export-Package
           # ----------------------------------------------------------
 
           echo
@@ -174,184 +159,81 @@ jobs:
           echo "DISCOVERING EXPORTED PACKAGES"
           echo "========================================="
 
-          while IFS= read -r domain; do
+          while IFS='|' read -r bundle domain; do
 
             while IFS= read -r manifest; do
 
-              [[ -f "$manifest" ]] || continue
-
-              bundle="$(
-                awk '
-                  BEGIN {
-                    IGNORECASE = 1
-                  }
-
-                  /^Bundle-SymbolicName:/ {
-                    value = $0
-                    sub(/^Bundle-SymbolicName:[[:space:]]*/, "", value)
-                    sub(/[[:space:]]*;.*/, "", value)
-                    gsub(/\r/, "", value)
-                    print value
-                    exit
-                  }
-                ' "$manifest"
-              )"
-
-              [[ -n "$bundle" ]] || continue
-
               awk '
+                BEGIN {
+                  IGNORECASE = 1
+                }
+
                 /^Export-Package:/ {
-                  value = $0
-                  sub(/^Export-Package:[[:space:]]*/, "", value)
-                  print value
-                  in_export = 1
-                  next
+                  line = $0
+                  sub(/^Export-Package:[[:space:]]*/, "", line)
+                  print line
                 }
 
-                in_export && /^[[:space:]]+/ {
-                  value = $0
-                  sub(/^[[:space:]]*/, "", value)
-                  print value
-                  next
+                /^[[:space:]]+[A-Za-z0-9_.-]+([[:space:]]|$)/ {
+                  if (started) {
+                    print $0
+                  }
                 }
 
-                in_export && /^[A-Za-z0-9-]+:/ {
-                  in_export = 0
+                {
+                  if ($0 ~ /^Export-Package:/) {
+                    started = 1
+                  }
                 }
-              ' "$manifest" |
+              ' "$manifest" 2>/dev/null |
+              tr '\r\n' '  ' |
               tr ',' '\n' |
-              sed 's/^[[:space:]]*//' |
-              sed 's/;.*//' |
+              sed 's/[[:space:]].*//' |
+              sed '/^$/d' |
               while IFS= read -r package; do
-
-                [[ -n "$package" ]] || continue
-
-                echo "$package|$bundle|$domain" \
-                  >> /tmp/osgi_exports
-
-                echo "  $domain -> $package"
-
+                echo "$package|$bundle|$domain" >> /tmp/osgi_exports
               done
 
             done < <(
               find "$domain" \
                 -type f \
                 -path '*/META-INF/MANIFEST.MF' \
+                -exec grep -l "Export-Package:" {} \; \
                 2>/dev/null
             )
 
-          done < /tmp/osgi_domains
-
-          sort -u /tmp/osgi_exports -o /tmp/osgi_exports
+          done < /tmp/osgi_bundle_domains
 
           # ----------------------------------------------------------
-          # Discover Import-Package and Require-Bundle.
+          # Discover Import-Package
           # ----------------------------------------------------------
 
           echo
           echo "========================================="
-          echo "DISCOVERING OSGi IMPORT DEPENDENCIES"
+          echo "DISCOVERING IMPORTED PACKAGES"
           echo "========================================="
 
-          while IFS= read -r domain; do
+          while IFS='|' read -r bundle domain; do
 
             while IFS= read -r manifest; do
 
-              [[ -f "$manifest" ]] || continue
-
-              bundle="$(
-                awk '
-                  BEGIN {
-                    IGNORECASE = 1
-                  }
-
-                  /^Bundle-SymbolicName:/ {
-                    value = $0
-                    sub(/^Bundle-SymbolicName:[[:space:]]*/, "", value)
-                    sub(/[[:space:]]*;.*/, "", value)
-                    gsub(/\r/, "", value)
-                    print value
-                    exit
-                  }
-                ' "$manifest"
-              )"
-
-              [[ -n "$bundle" ]] || continue
-
-              # ------------------------------------------------------
-              # Import-Package
-              # ------------------------------------------------------
-
               awk '
+                BEGIN {
+                  IGNORECASE = 1
+                }
+
                 /^Import-Package:/ {
-                  value = $0
-                  sub(/^Import-Package:[[:space:]]*/, "", value)
-                  print value
-                  in_import = 1
-                  next
+                  line = $0
+                  sub(/^Import-Package:[[:space:]]*/, "", line)
+                  print line
                 }
-
-                in_import && /^[[:space:]]+/ {
-                  value = $0
-                  sub(/^[[:space:]]*/, "", value)
-                  print value
-                  next
-                }
-
-                in_import && /^[A-Za-z0-9-]+:/ {
-                  in_import = 0
-                }
-              ' "$manifest" |
+              ' "$manifest" 2>/dev/null |
+              tr '\r\n' '  ' |
               tr ',' '\n' |
-              sed 's/^[[:space:]]*//' |
-              sed 's/;.*//' |
+              sed 's/[[:space:]].*//' |
+              sed '/^$/d' |
               while IFS= read -r package; do
-
-                [[ -n "$package" ]] || continue
-
-                echo "$package|$bundle|$domain" \
-                  >> /tmp/osgi_imports
-
-                echo "  $domain imports $package"
-
-              done
-
-              # ------------------------------------------------------
-              # Require-Bundle
-              # ------------------------------------------------------
-
-              awk '
-                /^Require-Bundle:/ {
-                  value = $0
-                  sub(/^Require-Bundle:[[:space:]]*/, "", value)
-                  print value
-                  in_require = 1
-                  next
-                }
-
-                in_require && /^[[:space:]]+/ {
-                  value = $0
-                  sub(/^[[:space:]]*/, "", value)
-                  print value
-                  next
-                }
-
-                in_require && /^[A-Za-z0-9-]+:/ {
-                  in_require = 0
-                }
-              ' "$manifest" |
-              tr ',' '\n' |
-              sed 's/^[[:space:]]*//' |
-              sed 's/;.*//' |
-              while IFS= read -r required; do
-
-                [[ -n "$required" ]] || continue
-
-                echo "$required|$bundle|$domain" \
-                  >> /tmp/osgi_requires
-
-                echo "  $domain requires bundle $required"
-
+                echo "$package|$bundle|$domain" >> /tmp/osgi_imports
               done
 
             done < <(
@@ -361,54 +243,85 @@ jobs:
                 2>/dev/null
             )
 
-          done < /tmp/osgi_domains
-
-          sort -u /tmp/osgi_imports -o /tmp/osgi_imports
-          sort -u /tmp/osgi_requires -o /tmp/osgi_requires
+          done < /tmp/osgi_bundle_domains
 
           # ----------------------------------------------------------
-          # Build dependency graph from Import-Package.
-          #
-          # Provider -> Consumer
+          # Discover Require-Bundle
           # ----------------------------------------------------------
 
           echo
           echo "========================================="
-          echo "BUILDING PACKAGE DEPENDENCY GRAPH"
+          echo "DISCOVERING REQUIRED BUNDLES"
           echo "========================================="
 
-          while IFS='|' read -r package consumer consumer_bundle_domain; do
+          while IFS='|' read -r bundle domain; do
+
+            while IFS= read -r manifest; do
+
+              awk '
+                BEGIN {
+                  IGNORECASE = 1
+                }
+
+                /^Require-Bundle:/ {
+                  line = $0
+                  sub(/^Require-Bundle:[[:space:]]*/, "", line)
+                  print line
+                }
+              ' "$manifest" 2>/dev/null |
+              tr '\r\n' '  ' |
+              tr ',' '\n' |
+              sed 's/[[:space:]].*//' |
+              sed '/^$/d' |
+              while IFS= read -r required; do
+                echo "$required|$bundle|$domain" >> /tmp/osgi_requires
+              done
+
+            done < <(
+              find "$domain" \
+                -type f \
+                -path '*/META-INF/MANIFEST.MF' \
+                2>/dev/null
+            )
+
+          done < /tmp/osgi_bundle_domains
+
+          # ==========================================================
+          # BUILD PACKAGE DEPENDENCY EDGES
+          #
+          # Direction:
+          #
+          # provider -> consumer
+          #
+          # Example:
+          #
+          # catalog -> orders
+          # ==========================================================
+
+          echo
+          echo "========================================="
+          echo "BUILDING OSGi DEPENDENCY GRAPH"
+          echo "========================================="
+
+          while IFS='|' read -r package consumer consumer_domain; do
 
             [[ -n "$package" ]] || continue
 
             while IFS='|' read -r exported provider provider_domain; do
 
-              [[ "$provider_domain" == "$consumer_bundle_domain" ]] \
-                && continue
+              [[ "$exported" == "$package" ]] || continue
+              [[ "$provider_domain" == "$consumer_domain" ]] && continue
 
-              echo "$provider_domain|$consumer_bundle_domain|package:$package" \
+              echo "$provider_domain|$consumer_domain|package:$package" \
                 >> /tmp/osgi_edges
 
-            done < <(
-              awk -F'|' -v pkg="$package" '
-                $1 == pkg {
-                  print
-                }
-              ' /tmp/osgi_exports
-            )
+            done < /tmp/osgi_exports
 
           done < /tmp/osgi_imports
 
-          # ----------------------------------------------------------
-          # Build dependency graph from Require-Bundle.
-          #
-          # Provider -> Consumer
-          # ----------------------------------------------------------
-
-          echo
-          echo "========================================="
-          echo "BUILDING BUNDLE DEPENDENCY GRAPH"
-          echo "========================================="
+          # ==========================================================
+          # BUILD Require-Bundle DEPENDENCY EDGES
+          # ==========================================================
 
           while IFS='|' read -r required consumer consumer_domain; do
 
@@ -416,204 +329,75 @@ jobs:
 
             while IFS='|' read -r provider provider_domain; do
 
-              [[ "$provider_domain" == "$consumer_domain" ]] \
-                && continue
+              [[ "$provider" == "$required" ]] || continue
+              [[ "$provider_domain" == "$consumer_domain" ]] && continue
 
               echo "$provider_domain|$consumer_domain|bundle:$required" \
                 >> /tmp/osgi_edges
 
-            done < <(
-              awk -F'|' -v required="$required" '
-                $1 == required {
-                  print
-                }
-              ' /tmp/osgi_bundle_domains
-            )
+            done < /tmp/osgi_bundle_domains
 
           done < /tmp/osgi_requires
 
+          sort -u /tmp/osgi_edges \
+            -o /tmp/osgi_edges
+
           # ----------------------------------------------------------
-          # Discover features.
+          # Remove invalid/self edges
           # ----------------------------------------------------------
+
+          awk -F'|' '
+            $1 != $2 && $1 != "" && $2 != ""
+          ' /tmp/osgi_edges > /tmp/osgi_edges.clean
+
+          mv /tmp/osgi_edges.clean /tmp/osgi_edges
+
+          # ==========================================================
+          # SAVE DISCOVERY INFORMATION
+          # ==========================================================
+
+          cp /tmp/osgi_domains ./osgi_domains.txt
+          cp /tmp/osgi_edges ./osgi_edges.txt
+          cp /tmp/osgi_bundle_domains ./osgi_bundle_domains.txt
+          cp /tmp/osgi_exports ./osgi_exports.txt
+          cp /tmp/osgi_imports ./osgi_imports.txt
+          cp /tmp/osgi_requires ./osgi_requires.txt
+
+          # ==========================================================
+          # DISPLAY GRAPH
+          # ==========================================================
 
           echo
           echo "========================================="
-          echo "DISCOVERING FEATURES"
-          echo "========================================="
-
-          while IFS= read -r domain; do
-
-            while IFS= read -r feature; do
-
-              feature_id="$(
-                awk '
-                  /<feature[[:space:]]/ {
-
-                    if (match($0, /id="[^"]+"/)) {
-
-                      value = substr($0, RSTART, RLENGTH)
-
-                      sub(/^id="/, "", value)
-                      sub(/"$/, "", value)
-
-                      print value
-                      exit
-                    }
-                  }
-                ' "$feature"
-              )"
-
-              if [[ -n "$feature_id" ]]; then
-
-                echo "$feature_id|$domain" \
-                  >> /tmp/feature_domains
-
-                echo "$domain -> feature $feature_id"
-
-              fi
-
-            done < <(
-              find "$domain" \
-                -type f \
-                -name 'feature.xml' \
-                2>/dev/null
-            )
-
-          done < /tmp/osgi_domains
-
-          sort -u /tmp/feature_domains -o /tmp/feature_domains
-
-          # ----------------------------------------------------------
-          # Build feature dependency graph.
-          #
-          # Provider feature -> Consumer product
-          # ----------------------------------------------------------
-
-          echo
-          echo "========================================="
-          echo "BUILDING FEATURE DEPENDENCY GRAPH"
-          echo "========================================="
-
-          while IFS= read -r domain; do
-
-            while IFS= read -r feature; do
-
-              while IFS= read -r required_feature; do
-
-                [[ -n "$required_feature" ]] || continue
-
-                provider_domain="$(
-                  awk -F'|' \
-                    -v feature="$required_feature" '
-                      $1 == feature {
-                        print $2
-                        exit
-                      }
-                    ' /tmp/feature_domains
-                )"
-
-                if [[ -n "$provider_domain" &&
-                      "$provider_domain" != "$domain" ]]; then
-
-                  echo "$provider_domain|$domain|feature:$required_feature" \
-                    >> /tmp/osgi_edges
-
-                fi
-
-              done < <(
-                sed -n \
-                  's/.*<import[[:space:]]\+feature="\([^"]*\)".*/\1/p' \
-                  "$feature"
-              )
-
-            done < <(
-              find "$domain" \
-                -type f \
-                -name 'feature.xml' \
-                2>/dev/null
-            )
-
-          done < /tmp/osgi_domains
-
-          # ----------------------------------------------------------
-          # Remove duplicate graph edges.
-          # ----------------------------------------------------------
-
-          sort -u /tmp/osgi_edges -o /tmp/osgi_edges
-
-          # ----------------------------------------------------------
-          # Display dependency graph.
-          # ----------------------------------------------------------
-
-          echo
-          echo "========================================="
-          echo "PRODUCT DEPENDENCY GRAPH"
+          echo "OSGi DEPENDENCY GRAPH"
           echo "========================================="
 
           if [[ -s /tmp/osgi_edges ]]; then
 
             while IFS='|' read -r provider consumer reason; do
-
               echo "$provider -> $consumer [$reason]"
-
             done < /tmp/osgi_edges
 
           else
-
-            echo "No cross-product dependencies discovered."
-
+            echo "No cross-module OSGi dependencies discovered."
           fi
 
-          # ----------------------------------------------------------
-          # Display all products.
-          # ----------------------------------------------------------
-
-          echo
-          echo "========================================="
-          echo "ALL DISCOVERED PRODUCTS"
-          echo "========================================="
-
-          cat /tmp/osgi_domains
-
-          # ----------------------------------------------------------
-          # Save discovery information.
-          # ----------------------------------------------------------
-
-          cp /tmp/osgi_domains \
-            "$GITHUB_WORKSPACE/osgi_domains.txt"
-
-          cp /tmp/osgi_edges \
-            "$GITHUB_WORKSPACE/osgi_edges.txt"
-
-          cp /tmp/osgi_bundle_domains \
-            "$GITHUB_WORKSPACE/osgi_bundle_domains.txt"
-
-          cp /tmp/osgi_exports \
-            "$GITHUB_WORKSPACE/osgi_exports.txt"
-
-          cp /tmp/osgi_imports \
-            "$GITHUB_WORKSPACE/osgi_imports.txt"
-
-          cp /tmp/osgi_requires \
-            "$GITHUB_WORKSPACE/osgi_requires.txt"
-
       # ============================================================
-      # 5. Detect changed modules
+      # 5. DETECT CHANGED PRODUCTS
       # ============================================================
-      - name: Detect changed modules
+      - name: Detect changed products
         id: changes
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
-          echo
           echo "========================================="
-          echo "DETECTING BUILD SCENARIO"
+          echo "DETECTING CHANGED PRODUCTS"
           echo "========================================="
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            MODE="${{ inputs.build_mode }}"
-          else
+          MODE="${{ inputs.build_mode }}"
+
+          if [[ -z "$MODE" ]]; then
             MODE="changed"
           fi
 
@@ -621,22 +405,22 @@ jobs:
 
           echo "BUILD_MODE=$MODE" >> "$GITHUB_ENV"
 
-          # --------------------------------------------------------
-          # Full build
-          # --------------------------------------------------------
+          rm -f changed_domains.txt
+          touch changed_domains.txt
+
+          # ----------------------------------------------------------
+          # ALL MODE
+          # ----------------------------------------------------------
 
           if [[ "$MODE" == "all" ]]; then
 
-            echo
-            echo "Full build requested."
-
             cp osgi_domains.txt changed_domains.txt
 
-          # --------------------------------------------------------
-          # Changed build
-          # --------------------------------------------------------
-
           else
+
+            # --------------------------------------------------------
+            # Determine comparison base
+            # --------------------------------------------------------
 
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
 
@@ -644,58 +428,81 @@ jobs:
 
             else
 
-              BASE_SHA="$(git rev-parse HEAD~1)"
+              if git rev-parse HEAD~1 >/dev/null 2>&1; then
+                BASE_SHA="$(git rev-parse HEAD~1)"
+              else
+                BASE_SHA=""
+              fi
 
             fi
 
-            HEAD_SHA="${{ github.sha }}"
+            echo "Base SHA: ${BASE_SHA:-none}"
 
-            echo
-            echo "Base SHA:"
-            echo "$BASE_SHA"
+            # --------------------------------------------------------
+            # No previous commit available
+            # --------------------------------------------------------
 
-            echo
-            echo "Head SHA:"
-            echo "$HEAD_SHA"
+            if [[ -z "$BASE_SHA" ]]; then
 
-            echo
-            echo "Changed files:"
-            git diff --name-only "$BASE_SHA" "$HEAD_SHA"
-
-            : > changed_domains.txt
-
-            # ------------------------------------------------------
-            # Maven metadata changes can affect the complete reactor.
-            # ------------------------------------------------------
-
-            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" |
-              grep -qE '^(pom.xml|[^/]+/pom.xml)$'; then
-
-              echo
-              echo "Maven build metadata changed."
-              echo "Selecting all products."
-
-              cat osgi_domains.txt > changed_domains.txt
+              cp osgi_domains.txt changed_domains.txt
 
             else
 
-              while IFS= read -r file; do
+              CHANGED_FILES="$(
+                git diff --name-only "$BASE_SHA" HEAD
+              )"
 
-                [[ -z "$file" ]] && continue
+              echo
+              echo "Changed files:"
+              echo "$CHANGED_FILES"
 
-                domain="${file%%/*}"
+              # ------------------------------------------------------
+              # Root build files changed
+              # ------------------------------------------------------
 
-                if grep -Fxq "$domain" osgi_domains.txt; then
-                  echo "$domain" >> changed_domains.txt
-                fi
+              if echo "$CHANGED_FILES" |
+                awk '
+                  $0 == "pom.xml" ||
+                  $0 == ".mvn/extensions.xml" ||
+                  $0 == ".mvn/maven.config"
+                  { found=1 }
 
-              done < <(
-                git diff --name-only "$BASE_SHA" "$HEAD_SHA"
-              )
+                  END {
+                    exit(found ? 0 : 1)
+                  }
+                '
+              then
+
+                echo
+                echo "Root build configuration changed."
+                echo "Selecting all product modules."
+
+                cp osgi_domains.txt changed_domains.txt
+
+              else
+
+                # ----------------------------------------------------
+                # Detect top-level product directories from changes
+                # ----------------------------------------------------
+
+                while IFS= read -r file; do
+
+                  [[ -n "$file" ]] || continue
+
+                  domain="${file%%/*}"
+
+                  if grep -Fxq "$domain" osgi_domains.txt; then
+                    echo "$domain" >> changed_domains.txt
+                  fi
+
+                done <<< "$CHANGED_FILES"
+
+                sort -u changed_domains.txt \
+                  -o changed_domains.txt
+
+              fi
 
             fi
-
-            sort -u changed_domains.txt -o changed_domains.txt
 
           fi
 
@@ -705,175 +512,143 @@ jobs:
           echo "========================================="
 
           if [[ -s changed_domains.txt ]]; then
-
             cat changed_domains.txt
-
           else
-
             echo "No product modules changed."
-
           fi
 
           echo
           echo "Changed products detected successfully."
-          
+
       # ============================================================
-      # 6. Resolve all downstream dependents
+      # 6. RESOLVE DEPENDENCIES AND DOWNSTREAM DEPENDENTS
       # ============================================================
-      - name: Resolve dependency chain
+      - name: Resolve required build modules
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+
+          echo "========================================="
+          echo "RESOLVING DEPENDENCIES AND DEPENDENTS"
+          echo "========================================="
+
+          rm -f selected_domains.txt
+          touch selected_domains.txt
+
+          # Start with directly changed modules.
+          cat changed_domains.txt >> selected_domains.txt
+
+          # ----------------------------------------------------------
+          # For every selected provider, add downstream consumers.
+          #
+          # Because edges are:
+          #
+          # provider -> consumer
+          #
+          # this automatically finds dependents.
+          # ----------------------------------------------------------
+
+          changed=1
+
+          while [[ "$changed" -eq 1 ]]; do
+
+            changed=0
+
+            while IFS='|' read -r provider consumer reason; do
+
+              [[ -n "$provider" ]] || continue
+              [[ -n "$consumer" ]] || continue
+
+              if grep -Fxq "$provider" selected_domains.txt &&
+                 ! grep -Fxq "$consumer" selected_domains.txt
+              then
+
+                echo "Adding dependent: $provider -> $consumer"
+                echo "$consumer" >> selected_domains.txt
+
+                sort -u selected_domains.txt \
+                  -o selected_domains.txt
+
+                changed=1
+
+              fi
+
+            done < osgi_edges.txt
+
+          done
+
+          sort -u selected_domains.txt \
+            -o selected_domains.txt
 
           echo
           echo "========================================="
-          echo "RESOLVING DEPENDENCY CHAIN"
+          echo "FINAL SELECTED MODULES"
           echo "========================================="
 
-          : > selected_domains.txt
-
-          if [[ "$BUILD_MODE" == "all" ]]; then
-
-            cat osgi_domains.txt > selected_domains.txt
-
-          else
-
-            cp changed_domains.txt selected_domains.txt
-
-            # --------------------------------------------------------
-            # Resolve transitive downstream dependents.
-            #
-            # Graph direction:
-            #
-            # provider -> consumer
-            #
-            # Example:
-            #
-            # catalog -> orders
-            #
-            # If catalog changes:
-            #
-            # catalog
-            # orders
-            #
-            # are selected.
-            # --------------------------------------------------------
-
-            changed=1
-
-            while [[ "$changed" -eq 1 ]]; do
-
-              changed=0
-
-              while IFS='|' read -r provider consumer reason; do
-
-                [[ -n "$provider" ]] || continue
-                [[ -n "$consumer" ]] || continue
-
-                if grep -Fxq "$provider" selected_domains.txt &&
-                   ! grep -Fxq "$consumer" selected_domains.txt; then
-
-                  echo
-                  echo "Dependency discovered:"
-                  echo "  $provider -> $consumer [$reason]"
-
-                  echo "$consumer" >> selected_domains.txt
-
-                  changed=1
-
-                fi
-
-              done < osgi_edges.txt
-
-              sort -u selected_domains.txt -o selected_domains.txt
-
-            done
-
-          fi
-
-          echo
-          echo "========================================="
-          echo "SELECTED PRODUCTS FOR REBUILD"
-          echo "========================================="
-
-          if [[ -s selected_domains.txt ]]; then
-
-            cat selected_domains.txt
-
-          else
-
-            echo "No products selected."
-
-          fi
-
-          echo
-          echo "Total selected:"
-          wc -l < selected_domains.txt
+          cat selected_domains.txt
 
       # ============================================================
-      # 7. Calculate topological build order
+      # 7. CALCULATE TOPOLOGICAL BUILD ORDER
       # ============================================================
       - name: Calculate build order
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
-          echo
           echo "========================================="
           echo "CALCULATING BUILD ORDER"
           echo "========================================="
 
-          : > build_order.txt
+          rm -f build_order.txt
+          touch build_order.txt
 
-          declare -A DONE
+          rm -f done_domains.txt
+          touch done_domains.txt
 
-          while IFS= read -r module; do
-
-            [[ -n "$module" ]] || continue
-
-            DONE["$module"]=0
-
-          done < selected_domains.txt
-
-          total=$(wc -l < selected_domains.txt)
+          total="$(wc -l < selected_domains.txt | tr -d ' ')"
           count=0
 
           while [[ "$count" -lt "$total" ]]; do
 
             progress=0
 
-            while IFS= read -r module; do
+            while IFS= read -r candidate; do
 
-              [[ -n "$module" ]] || continue
+              [[ -n "$candidate" ]] || continue
 
-              [[ "${DONE[$module]}" -eq 1 ]] && continue
+              if grep -Fxq "$candidate" done_domains.txt; then
+                continue
+              fi
 
               ready=1
 
               # ------------------------------------------------------
-              # A module is ready when every selected provider that
-              # points to it has already been built.
+              # Find every selected provider of this candidate.
               # ------------------------------------------------------
 
               while IFS='|' read -r provider consumer reason; do
 
-                [[ "$consumer" == "$module" ]] || continue
+                [[ "$consumer" == "$candidate" ]] || continue
 
-                if grep -Fxq "$provider" selected_domains.txt &&
-                   [[ "${DONE[$provider]}" -ne 1 ]]; then
+                if grep -Fxq "$provider" selected_domains.txt; then
 
-                  ready=0
-                  break
+                  if ! grep -Fxq "$provider" done_domains.txt; then
+                    ready=0
+                    break
+                  fi
 
                 fi
 
               done < osgi_edges.txt
 
+              # ------------------------------------------------------
+              # Candidate can now be built.
+              # ------------------------------------------------------
+
               if [[ "$ready" -eq 1 ]]; then
 
-                echo "$module" >> build_order.txt
-
-                DONE["$module"]=1
+                echo "$candidate" >> build_order.txt
+                echo "$candidate" >> done_domains.txt
 
                 count=$((count + 1))
                 progress=1
@@ -883,49 +658,30 @@ jobs:
             done < selected_domains.txt
 
             # --------------------------------------------------------
-            # Protect against circular dependency.
+            # Detect circular/unresolved dependency graph.
             # --------------------------------------------------------
 
             if [[ "$progress" -eq 0 ]]; then
 
               echo
-              echo "ERROR: Dependency graph contains a cycle"
-              echo "or a dependency could not be resolved."
-
+              echo "ERROR: Unable to calculate a complete build order."
               echo
-              echo "Remaining modules:"
+              echo "Possible circular or unresolved dependency:"
+              echo
 
-              while IFS= read -r module; do
+              while IFS= read -r candidate; do
 
-                [[ -z "$module" ]] && continue
-
-                if [[ "${DONE[$module]}" -eq 0 ]]; then
-                  echo "  $module"
+                if ! grep -Fxq "$candidate" done_domains.txt; then
+                  echo "  $candidate"
                 fi
 
               done < selected_domains.txt
 
               echo
-              echo "Relevant dependency edges:"
-
-              while IFS='|' read -r provider consumer reason; do
-
-                if grep -Fxq "$provider" selected_domains.txt &&
-                   grep -Fxq "$consumer" selected_domains.txt; then
-
-                  if [[ "${DONE[$provider]}" -eq 0 ||
-                        "${DONE[$consumer]}" -eq 0 ]]; then
-
-                    echo "  $provider -> $consumer [$reason]"
-
-                  fi
-
-                fi
-
-              done < osgi_edges.txt
+              echo "Dependency graph:"
+              cat osgi_edges.txt
 
               exit 1
-
             fi
 
           done
@@ -935,110 +691,59 @@ jobs:
           echo "FINAL BUILD ORDER"
           echo "========================================="
 
-          sequence=1
-
-          while IFS= read -r module; do
-
-            echo "$sequence. $module"
-
-            sequence=$((sequence + 1))
-
-          done < build_order.txt
+          nl -ba build_order.txt
 
       # ============================================================
-      # 8. Display complete dependency graph and rebuild plan
+      # 8. DISPLAY BUILD PLAN
       # ============================================================
-      - name: Display dependency graph and rebuild plan
+      - name: Display build plan
         shell: bash
         run: |
-          set -euo pipefail
+          echo "========================================="
+          echo "OSGi SMART BUILD PLAN"
+          echo "========================================="
 
           echo
-          echo "======================================================"
-          echo "                 OSGi BUILD PLAN"
-          echo "======================================================"
-
-          echo
-          echo "Build scenario:"
+          echo "Build mode:"
           echo "  $BUILD_MODE"
 
           echo
-          echo "------------------------------------------------------"
-          echo "ALL PRODUCTS"
-          echo "------------------------------------------------------"
-
-          cat osgi_domains.txt
-
-          echo
-          echo "------------------------------------------------------"
-          echo "PRODUCT DEPENDENCY GRAPH"
-          echo "------------------------------------------------------"
-
-          if [[ -s osgi_edges.txt ]]; then
-
-            while IFS='|' read -r provider consumer reason; do
-
-              echo "  $provider -> $consumer [$reason]"
-
-            done < osgi_edges.txt
-
-          else
-
-            echo "  No cross-product dependencies."
-
-          fi
-
-          echo
-          echo "------------------------------------------------------"
-          echo "DIRECTLY CHANGED PRODUCTS"
-          echo "------------------------------------------------------"
-
+          echo "Directly changed products:"
           if [[ -s changed_domains.txt ]]; then
             cat changed_domains.txt
           else
-            echo "None"
+            echo "  None"
           fi
 
           echo
-          echo "------------------------------------------------------"
-          echo "PRODUCTS SELECTED FOR REBUILD"
-          echo "------------------------------------------------------"
+          echo "Selected products including dependents:"
+          cat selected_domains.txt
 
-          if [[ -s selected_domains.txt ]]; then
-            cat selected_domains.txt
+          echo
+          echo "Build order:"
+          nl -ba build_order.txt
+
+          echo
+          echo "========================================="
+          echo "DEPENDENCY GRAPH"
+          echo "========================================="
+
+          if [[ -s osgi_edges.txt ]]; then
+            cat osgi_edges.txt
           else
-            echo "None"
+            echo "No cross-module dependencies."
           fi
 
-          echo
-          echo "------------------------------------------------------"
-          echo "BUILD ORDER"
-          echo "------------------------------------------------------"
-
-          n=1
-
-          while IFS= read -r module; do
-
-            echo "  $n. $module"
-
-            n=$((n + 1))
-
-          done < build_order.txt
-
-          echo
-          echo "======================================================"
-
       # ============================================================
-      # 9. Clean selected products
+      # 9. CLEAN SELECTED MODULES
       # ============================================================
-      - name: Clean selected products
+      - name: Clean selected modules
         shell: bash
         run: |
           set -euo pipefail
 
-          echo
           echo "========================================="
-          echo "CLEANING SELECTED PRODUCTS"
+          echo "CLEANING SELECTED MODULES"
           echo "========================================="
 
           while IFS= read -r module; do
@@ -1055,55 +760,39 @@ jobs:
           done < build_order.txt
 
       # ============================================================
-      # 10. Build selected products in dependency order
+      # 10. BUILD SELECTED MODULES IN ORDER
       # ============================================================
-      - name: Build selected products in dependency order
+      - name: Build selected modules in dependency order
         shell: bash
         run: |
           set -euo pipefail
 
-          echo
           echo "========================================="
-          echo "BUILDING PRODUCTS"
+          echo "BUILDING SELECTED MODULES"
           echo "========================================="
-
-          sequence=1
 
           while IFS= read -r module; do
 
             [[ -n "$module" ]] || continue
 
             echo
-            echo "======================================================"
-            echo "BUILD STEP $sequence"
-            echo "PRODUCT: $module"
-            echo "======================================================"
-
-            echo
-            echo "Maven command:"
-            echo "mvn -B -pl $module install -DskipTests"
+            echo "========================================="
+            echo "BUILDING: $module"
+            echo "========================================="
 
             mvn -B \
               -pl "$module" \
               install \
               -DskipTests
 
-            echo
-            echo "SUCCESS: $module"
-
-            sequence=$((sequence + 1))
-
           done < build_order.txt
 
       # ============================================================
-      # 11. Show generated artifacts
+      # 11. SHOW ARTIFACTS
       # ============================================================
       - name: Show generated artifacts
         shell: bash
         run: |
-          set -euo pipefail
-
-          echo
           echo "========================================="
           echo "GENERATED ARTIFACTS"
           echo "========================================="
@@ -1113,9 +802,7 @@ jobs:
             [[ -n "$module" ]] || continue
 
             echo
-            echo "-----------------------------------------"
-            echo "PRODUCT: $module"
-            echo "-----------------------------------------"
+            echo "Artifacts for: $module"
 
             find "$module" \
               -path "*/target/*" \
@@ -1130,39 +817,45 @@ jobs:
           done < build_order.txt
 
       # ============================================================
-      # 12. Final summary
+      # 12. FINAL SUMMARY
       # ============================================================
       - name: Build summary
+        if: always()
         shell: bash
         run: |
-          set -euo pipefail
+          echo "========================================="
+          echo "OSGi BUILD SUMMARY"
+          echo "========================================="
 
           echo
-          echo "======================================================"
-          echo "                 BUILD SUCCESSFUL"
-          echo "======================================================"
+          echo "Build mode:"
+          echo "${BUILD_MODE:-unknown}"
 
           echo
-          echo "Scenario:"
-          echo "  $BUILD_MODE"
+          echo "Directly changed modules:"
+          if [[ -f changed_domains.txt ]]; then
+            cat changed_domains.txt
+          else
+            echo "None"
+          fi
 
           echo
-          echo "Products rebuilt:"
-
-          cat selected_domains.txt
+          echo "Selected modules:"
+          if [[ -f selected_domains.txt ]]; then
+            cat selected_domains.txt
+          else
+            echo "None"
+          fi
 
           echo
           echo "Build order:"
-
-          n=1
-
-          while IFS= read -r module; do
-
-            echo "  $n. $module"
-
-            n=$((n + 1))
-
-          done < build_order.txt
+          if [[ -f build_order.txt ]]; then
+            nl -ba build_order.txt
+          else
+            echo "None"
+          fi
 
           echo
-          echo "======================================================"
+          echo "========================================="
+          echo "BUILD COMPLETED"
+          echo "========================================="
