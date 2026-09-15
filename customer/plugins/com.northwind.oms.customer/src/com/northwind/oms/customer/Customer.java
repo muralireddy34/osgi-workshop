@@ -1,3 +1,4 @@
+// Smart build test - customer changed
 package com.northwind.oms.customer;
 
 /**
