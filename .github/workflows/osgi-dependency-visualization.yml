@@ -1,4 +1,4 @@
-name: dependency-visualization
+name: Dependency-Visualization
 
 on:
   pull_request:
