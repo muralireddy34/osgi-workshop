@@ -1,4 +1,4 @@
-name: OSGi Smart Build
+name: dependency-visualization
 
 on:
   pull_request:
